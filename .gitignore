@@ -1,0 +1,8 @@
+# Ambiente Virtual
+venv/
+
+# Pastas do PyCharm
+.idea/
+
+# Pastas de cache do Python
+__pycache__/
