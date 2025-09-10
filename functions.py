@@ -1,6 +1,5 @@
 import numpy as np
 import pandas as pd
-from pandas.core.computation.expr import intersection
 from collections import Counter
 from sklearn.neighbors import NearestNeighbors
 
@@ -62,23 +61,16 @@ def get_parameter_values(param_file: str) -> dict:
     Lê um arquivo de configuração e retorna os parâmetros em um dicionário.
 
     O arquivo deve ter o formato 'parametro = valor' em cada linha.
-
-    Args:
-        param_file: O caminho para o arquivo de configuração.
-
-    Returns:
-        Um dicionário com os nomes dos parâmetros como chaves e seus
-        respectivos valores.
     """
     parameters = {}
-    with open(param_file, 'r') as f:
+    with open(param_file, 'r', encoding='utf-8') as f:
         for line in f:
             # Ignora linhas vazias ou comentários
             if line.strip() and not line.strip().startswith('#'):
                 key, value = line.split('=', 1)
 
                 # Limpa espaços em branco da chave e do valor
-                key = key.strip()
+                key = key.strip().replace('.', '_')
                 value = value.strip()
 
                 # Tenta converter o valor para um número (float)
@@ -206,7 +198,14 @@ def get_cond_probabilities_neurons(micro_clusters: list, class_probabilities: np
             weight_factor = prototype_vector[class_idx]
 
             # p(x|y_j), the average output of the neuron, calculated from the sum and count
-            avg_output = average_neuron_outputs[i][0] / average_neuron_outputs[i][1]
+            sum_outputs = average_neuron_outputs[i][0]
+            count_outputs = average_neuron_outputs[i][1]
+
+            # Add a check to prevent division by zero
+            if count_outputs > 0:
+                avg_output = sum_outputs / count_outputs
+            else:
+                avg_output = 0 # If no samples, the average output is zero
 
             # Final probability p(y_j | y_k, x) calculation
             prob_j_ks_x = prob_j * prob_k_j * avg_output
@@ -266,7 +265,7 @@ def update_class_totals_probabilities(mapping: dict, pred: np.ndarray, num_pred:
     mapping['total_instances'] += num_pred
 
     if is_novelty == 0 and 'total_instances_np' in mapping:
-        mapping['total_instances_np'] += num_pred
+        mapping['total_instances_np'] = [count + num_pred for count in mapping['total_instances_np']]
 
     if pred.shape[0] > 0:
         for r in range(pred.shape[0]):
@@ -323,6 +322,7 @@ def update_model_information(mapping: dict, x: np.ndarray, time_stamp: int, n0: 
 
     This function implements the SOM learning rule for the online phase.
     """
+
     # Get the nearest neurons and their distances from the winner object
     neuron_indices = winner['nn_index'][inst_l]
     distances = winner['nn_dist'][inst_l]
@@ -333,7 +333,10 @@ def update_model_information(mapping: dict, x: np.ndarray, time_stamp: int, n0: 
         # for the micro_clusters list. We'll assume 0-based index here.
 
         # Get the specific micro-cluster and distance for this iteration
-        micro_cluster = mapping['micro_clusters'][neuron_idx]
+        micro_cluster = next((mc for mc in mapping['micro_clusters'] if mc['neuron_id'] == neuron_idx), None)
+
+        if micro_cluster is None:
+            continue
         distance = distances[i]
 
         # Update the micro-cluster's metadata

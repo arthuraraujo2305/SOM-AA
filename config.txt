@@ -1,0 +1,42 @@
+# --- Caminhos dos Arquivos de Dados ---
+# Mude estes caminhos para apontar para seus arquivos de dados de treino e teste
+train.data = datasets/mediamill-train.arff
+test.data = datasets/mediamill-test.arff
+
+# --- Parâmetros das Classes ---
+# Número total de classes conhecidas no treino
+num.classes = 101
+# Índices das classes que devem ser tratadas como novidade (0 se nenhuma)
+novel.classes = 0
+
+# --- Parâmetros do Algoritmo SOM ---
+# Dimensão da grade (ex: 10 para uma grade 10x10)
+grid.dimension = 10
+# Número de iterações do treinamento offline
+num.iterations = 1000
+# Taxa de aprendizado inicial
+n0 = 0.1
+# Taxa de aprendizado final
+n1 = 0.01
+# Modo de treino ('batch' ou 'online')
+train.mode = batch
+
+# --- Parâmetros do Modelo Online e Micro-clusters ---
+# Mínimo de exemplos para um neurônio ser considerado um cluster válido
+min.examples.cluster = 5
+# Se o modelo deve ser atualizado durante a fase online (1=sim, 0=não)
+update.model.info = 1
+# Parâmetro 'theta' (não usado ativamente no código Python, mas presente no R)
+theta = 100
+# Parâmetro 'omega' (não usado ativamente no código Python, mas presente no R)
+omega = 100
+
+# --- Parâmetros da Avaliação ---
+# Número de "janelas" para dividir a avaliação online
+num.evaluation.windows = 10
+# Número de vezes que o experimento inteiro deve ser repetido
+num.experiments = 1
+# Se predições vazias devem ser consideradas na avaliação (1=sim, 0=não)
+empty.predictions = 1
+# Parâmetro 'window.stm.check' (não usado ativamente no código Python)
+window.stm.check = 100

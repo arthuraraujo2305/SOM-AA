@@ -70,7 +70,8 @@ def kohonen_offline_global(offline_dataset: np.ndarray, offline_classes: pd.Data
 
     # Assemble the final results dictionary
     result = {
-        'som_micro_clusters': [[result_mc['som_map'], micro_clusters]],
+        'som_map': result_mc['som_map'],
+        'micro_clusters': micro_clusters,
         'z': z,
         'class_probabilities': class_probabilities,
         'class_totals': class_totals,
@@ -223,7 +224,7 @@ def kohonen_online_bayes_nd(mapping: dict, online_dataset: np.ndarray, init_n: f
                 mapping = update_class_totals_probabilities(mapping, pred.reshape(1, -1), 1,
                                                             initial_number_classes, 0,
                                                             num_offline_instances)
-                mapping = update_cond_probabilities_neurons(mapping, mapping['class_probabilities'])
+                mapping['micro_clusters'] = update_cond_probabilities_neurons(mapping['micro_clusters'], mapping['class_probabilities'])
 
             mapping['z'] = ((mapping['total_instances'] - 1) * mapping['z'] + np.sum(pred)) / mapping['total_instances']
 
