@@ -17,31 +17,56 @@ from functions import (compute_initial_class_probabilities_totals,
 def kohonen_offline_global(offline_dataset: np.ndarray, offline_classes: pd.DataFrame, num_it: int,
                            init_n: float, final_n: float, grid_d: int, tr_mode: str, min_ex: int) -> dict:
     """
-    Performs the offline training phase of the Kohonen map.
+    Performs the offline training phase of the Kohonen map with manual linear decay.
     """
-
     print("\nOffline phase - building maps!")
 
-    # Initial Calculations (using our functions.py module)
+    # 1. Initial Calculations (using our functions.py module)
     prob_results = compute_initial_class_probabilities_totals(offline_classes)
     class_totals = prob_results[1]
     class_probabilities = prob_results[0]
     z = compute_label_cardinality(offline_classes)
 
-    # Initialize and Train the SOM using MiniSom
+    # 2. Initialize and Train the SOM using MiniSom
     num_features = offline_dataset.shape[1]
 
-    # MiniSom initialization
+    # Set a seed for reproducibility
+    np.random.seed(10)
+
+    # MiniSom initialization - Note: sigma starts higher now.
+    initial_sigma = grid_d / 2.0
     som = MiniSom(x=grid_d, y=grid_d, input_len=num_features,
-                  sigma=1.0,
+                  sigma=initial_sigma,
                   learning_rate=init_n,
                   neighborhood_function='gaussian',
                   random_seed=10)
 
-    som.train_random(data=offline_dataset, num_iteration=num_it)
+    # Initialize weights with random samples from the dataset
+    som.random_weights_init(offline_dataset)
 
-    #  Post-processing to match R's 'som.map' structure
+    # --- NEW: Manual Training Loop for Linear Decay ---
+    # This block replaces the simple som.train_random() to mimic R's linear decay.
+    print("Starting SOM training with manual linear decay...")
+    for t in range(num_it):
+        # Linearly decay learning rate from init_n to final_n
+        learning_rate_t = init_n + (final_n - init_n) * (t / num_it)
 
+        # Linearly decay sigma from initial_sigma to 1.0
+        sigma_t = initial_sigma + (1.0 - initial_sigma) * (t / num_it)
+
+        # Update MiniSom's internal parameters for this iteration
+        som._learning_rate = learning_rate_t
+        som._sigma = sigma_t
+
+        # Pick a random data sample and update the map
+        rand_i = np.random.randint(len(offline_dataset))
+        sample = offline_dataset[rand_i]
+        som.update(sample, som.winner(sample), t, num_it)
+    print("SOM training completed.")
+    # --- END of Manual Training Loop ---
+
+    # --- 3. Post-processing to match R's 'som.map' structure ---
+    # (O resto da função continua igual)
     unit_classif = np.zeros(len(offline_dataset), dtype=int)
     distances = np.zeros(len(offline_dataset), dtype=float)
 
@@ -49,8 +74,6 @@ def kohonen_offline_global(offline_dataset: np.ndarray, offline_classes: pd.Data
         winner_pos = som.winner(x)
         winner_idx = np.ravel_multi_index(winner_pos, (grid_d, grid_d))
         unit_classif[i] = winner_idx
-
-        # Calculate Euclidean distance to the winning neuron's weights
         distances[i] = np.linalg.norm(x - som.get_weights()[winner_pos])
 
     som_map = {
@@ -59,7 +82,7 @@ def kohonen_offline_global(offline_dataset: np.ndarray, offline_classes: pd.Data
         'distances': distances
     }
 
-    # Compute Micro-Cluster properties (using our functions.py module)
+    # --- 4. Compute Micro-Cluster properties ---
     result_mc = compute_micro_clusters(som_map, offline_classes, min_ex)
 
     average_output_som_map = get_average_neuron_outputs(result_mc['som_map'], len(result_mc['micro_clusters']))
@@ -68,7 +91,7 @@ def kohonen_offline_global(offline_dataset: np.ndarray, offline_classes: pd.Data
                                                     class_probabilities,
                                                     average_output_som_map)
 
-    # Assemble the final results dictionary
+    # --- 5. Assemble the final results dictionary ---
     result = {
         'som_map': result_mc['som_map'],
         'micro_clusters': micro_clusters,

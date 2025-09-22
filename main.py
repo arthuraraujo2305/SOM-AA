@@ -2,6 +2,7 @@ import argparse
 import os
 import pickle
 from datetime import datetime
+from sklearn.preprocessing import StandardScaler
 
 import arff
 import pandas as pd
@@ -96,6 +97,19 @@ def main():
     print(f"Online dataset shape: {online_dataset.shape}")
     print(f"Online classes shape: {online_classes.shape}")
 
+    # --- NEW: Data Standardization Step ---
+    print("\nStandardizing data...")
+    scaler = StandardScaler()
+
+    # Fit the scaler ONLY on the training data to learn the mean and std deviation
+    scaler.fit(offline_dataset)
+
+    # Apply the learned transformation to both training and test data
+    offline_dataset_scaled = scaler.transform(offline_dataset)
+    online_dataset_scaled = scaler.transform(online_dataset)
+
+    print("Data standardized successfully.")
+
     print("\n--- Starting Offline Phase ---")
 
     # Extract the necessaries parameters of the dictionary to pass to the function
@@ -108,7 +122,7 @@ def main():
     min_ex = int(parameters['min_examples_cluster'])
 
     mapping = kohonen_offline_global(
-        offline_dataset=offline_dataset,
+        offline_dataset=offline_dataset_scaled,
         offline_classes=offline_classes,
         num_it=num_iterations,
         init_n=init_n,
@@ -135,7 +149,7 @@ def main():
     #Call the online function that we translated in kohonen.py
     online_results = kohonen_online_bayes_nd(
         mapping=mapping,
-        online_dataset=online_dataset,
+        online_dataset=online_dataset_scaled,
         init_n=init_n,
         novel_classes=novel_classes,
         update_model_info=update_model_info,
