@@ -148,6 +148,10 @@ def kohonen_online_bayes_nd(mapping: dict, online_dataset: np.ndarray, init_n: f
         nbrs = NearestNeighbors(n_neighbors=n_k).fit(neuron_centroids)
         distances, indices = nbrs.kneighbors(x)
 
+        print(f"\n--- DEBUGGING INSTANCE {i} ---")
+        print(f"Top {n_k} winning neuron IDs: {indices[0]}")
+        print(f"Distances to winners: {[f'{d:.4f}' for d in distances[0]]}")
+
         winner_dist = distances[0][0]
         winner_idx = indices[0][0]
 
@@ -177,6 +181,9 @@ def kohonen_online_bayes_nd(mapping: dict, online_dataset: np.ndarray, init_n: f
 
                 prototype_j = mc_j['prototype_vector']
 
+                print(f"\n  --- Analyzing Neuron J={j}, ID={neuron_j_idx} ---")
+                print(f"  Prototype Vector (first 5 values): {[f'{p:.2f}' for p in prototype_j[:5]]}")
+
                 if j == 0: #First winning neuron
                     mc_j['average_output'][0] += np.exp(-neuron_j_dist)
                     mc_j['average_output'][1] += 1
@@ -201,8 +208,17 @@ def kohonen_online_bayes_nd(mapping: dict, online_dataset: np.ndarray, init_n: f
                         prob_j_ks_x = prob_j * prob_k_j * prob_x_j
 
                         cond_prob_threshold = mc_j['cond_prob_threshold'][class_idx]
+
+                        print(f"    - Checking Class {class_idx}:")
+                        print(f"      - Calculated Prob P(y_j|...): {prob_j_ks_x:.6f}")
+                        print(f"      - Threshold to beat:         {cond_prob_threshold:.6f}")
+
                         if prob_j_ks_x >= cond_prob_threshold:
                             pred[class_idx] = 1
+                            print("      - DECISION: PREDICTED (1)")
+
+                        else:
+                            print("      - DECISION: NOT PREDICTED (0)")
 
                 else: # For the next closest neurons (j > 1)
                     active_classes_j = np.where(prototype_j > 0)[0]
@@ -227,10 +243,19 @@ def kohonen_online_bayes_nd(mapping: dict, online_dataset: np.ndarray, init_n: f
                             prob_j_ks_x = prob_j * prob_k_j * prob_x_j
                             cond_prob_threshold = mc_j['cond_prob_threshold'][class_idx]
 
+                            print(f"    - Checking Class {class_idx} (as new):")
+                            print(f"      - Calculated Prob P(y_j|...): {prob_j_ks_x:.6f}")
+                            print(f"      - Threshold to beat:         {cond_prob_threshold:.6f}")
+
                             if prob_j_ks_x >= cond_prob_threshold:
                                 mc_j['average_output'][0] += np.exp(-neuron_j_dist)
                                 mc_j['average_output'][1] += 1
                                 pred[class_idx] = 1
+                                print("      - DECISION: PREDICTED (1)")
+
+                            else:
+                                print("      - DECISION: NOT PREDICTED (0)")
+            print(f"\n  --- FINAL PREDICTION VECTOR (first 15 values): {pred[:15].astype(int)} ---")
 
             if winner_dist > radius_factor_2:
                 indexes_unknown_classified.append(i)

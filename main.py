@@ -147,9 +147,10 @@ def main():
         novel_classes = [novel_classes]
 
     #Call the online function that we translated in kohonen.py
+    print("\nDEBUGGING: Running online phase for the first instance only...")
     online_results = kohonen_online_bayes_nd(
         mapping=mapping,
-        online_dataset=online_dataset_scaled,
+        online_dataset=online_dataset_scaled[:1],
         init_n=init_n,
         novel_classes=novel_classes,
         update_model_info=update_model_info,
