@@ -42,7 +42,7 @@ def kohonen_offline_global(offline_dataset: np.ndarray, offline_classes: pd.Data
                   random_seed=10)
 
     # Initialize weights with random samples from the dataset
-    som.random_weights_init(offline_dataset)
+    som.pca_weights_init(offline_dataset)
 
     # --- NEW: Manual Training Loop for Linear Decay ---
     # This block replaces the simple som.train_random() to mimic R's linear decay.
@@ -85,7 +85,7 @@ def kohonen_offline_global(offline_dataset: np.ndarray, offline_classes: pd.Data
     # --- 4. Compute Micro-Cluster properties ---
     result_mc = compute_micro_clusters(som_map, offline_classes, min_ex)
 
-    average_output_som_map = get_average_neuron_outputs(result_mc['som_map'], len(result_mc['micro_clusters']))
+    average_output_som_map = get_average_neuron_outputs(result_mc['som_map'])
 
     micro_clusters = get_cond_probabilities_neurons(result_mc['micro_clusters'],
                                                     class_probabilities,
@@ -109,6 +109,8 @@ def kohonen_offline_global(offline_dataset: np.ndarray, offline_classes: pd.Data
     result['theta'] = grid_d * grid_d * result['min_instances_neuron']
 
     return result
+
+# Em kohonen.py, substitua a função inteira por esta versão limpa:
 
 def kohonen_online_bayes_nd(mapping: dict, online_dataset: np.ndarray, init_n: float,
                             novel_classes: list, update_model_info: bool,
@@ -134,6 +136,10 @@ def kohonen_online_bayes_nd(mapping: dict, online_dataset: np.ndarray, init_n: f
 
     # Main Loop: Process each instance
     for i, x_instance in enumerate(online_dataset):
+        # Adiciona um print de progresso para não parecer que o programa travou
+        if (i + 1) % 1000 == 0:
+            print(f"  Processing instance {i + 1}/{len(online_dataset)}...")
+
         time_stamp += 1
         x = x_instance.reshape(1, -1) # Reshape for k-NN
 
@@ -148,16 +154,10 @@ def kohonen_online_bayes_nd(mapping: dict, online_dataset: np.ndarray, init_n: f
         nbrs = NearestNeighbors(n_neighbors=n_k).fit(neuron_centroids)
         distances, indices = nbrs.kneighbors(x)
 
-        print(f"\n--- DEBUGGING INSTANCE {i} ---")
-        print(f"Top {n_k} winning neuron IDs: {indices[0]}")
-        print(f"Distances to winners: {[f'{d:.4f}' for d in distances[0]]}")
-
         winner_dist = distances[0][0]
         winner_idx = indices[0][0]
 
-        # Check if the pattern is "known" (Novelty Detection)
         mc_winner = next((mc for mc in mapping['micro_clusters'] if mc['neuron_id'] == winner_idx), None)
-
         if mc_winner is None: continue
 
         radius_factor_1 = mc_winner.get('radius_factor_1', float('inf'))
@@ -168,94 +168,58 @@ def kohonen_online_bayes_nd(mapping: dict, online_dataset: np.ndarray, init_n: f
 
         if novel_classes[0] == 0 or winner_dist <= radius_factor_1:
             explained = True
-
-            # START OF FULL PREDICTION LOGIC
             z = min(int(np.ceil(mapping['z'])), n_k)
 
             for j in range(z): # Loop through the z-nearest neurons
                 neuron_j_idx = indices[0][j]
                 neuron_j_dist = distances[0][j]
-
                 mc_j = next((mc for mc in mapping['micro_clusters'] if mc['neuron_id'] == neuron_j_idx), None)
                 if mc_j is None: continue
 
                 prototype_j = mc_j['prototype_vector']
 
-                print(f"\n  --- Analyzing Neuron J={j}, ID={neuron_j_idx} ---")
-                print(f"  Prototype Vector (first 5 values): {[f'{p:.2f}' for p in prototype_j[:5]]}")
-
                 if j == 0: #First winning neuron
                     mc_j['average_output'][0] += np.exp(-neuron_j_dist)
                     mc_j['average_output'][1] += 1
-
                     id_max = np.argmax(prototype_j)
                     pred[id_max] = 1
-
                     sorted_indices = np.argsort(prototype_j)[::-1]
                     active_classes_k = sorted_indices[prototype_j[sorted_indices] > 0]
-
                     for class_idx in active_classes_k:
                         if class_idx == id_max: continue
-
                         prob_j = mapping['class_probabilities'][class_idx, class_idx]
                         prob_x_j = np.exp(-neuron_j_dist)
                         prob_k_j = 1.0
-
                         for k_idx in active_classes_k:
                             if pred[k_idx] == 1 and k_idx != class_idx:
                                 prob_k_j *= mapping['class_probabilities'][k_idx, class_idx]
-
                         prob_j_ks_x = prob_j * prob_k_j * prob_x_j
-
                         cond_prob_threshold = mc_j['cond_prob_threshold'][class_idx]
-
-                        print(f"    - Checking Class {class_idx}:")
-                        print(f"      - Calculated Prob P(y_j|...): {prob_j_ks_x:.6f}")
-                        print(f"      - Threshold to beat:         {cond_prob_threshold:.6f}")
-
                         if prob_j_ks_x >= cond_prob_threshold:
                             pred[class_idx] = 1
-                            print("      - DECISION: PREDICTED (1)")
 
-                        else:
-                            print("      - DECISION: NOT PREDICTED (0)")
-
-                else: # For the next closest neurons (j > 1)
+                else: # For the next closest neurons (j > 0)
                     active_classes_j = np.where(prototype_j > 0)[0]
                     for class_idx in active_classes_j:
                         if pred[class_idx] == 0:
                             prob_j = mapping['class_probabilities'][class_idx, class_idx]
                             prob_x_j = np.exp(-neuron_j_dist)
                             prob_k_j = 1.0
-
-                            for k in range(j): # Check previously considered neurons
+                            for k in range(j):
                                 prev_neuron_idx = indices[0][k]
                                 mc_k = next((mc for mc in mapping['micro_clusters'] if mc['neuron_id'] == prev_neuron_idx), None)
                                 if mc_k is None: continue
-
                                 prototype_k = mc_k['prototype_vector']
                                 active_classes_k = np.where(prototype_k > 0)[0]
-
                                 for k_idx in active_classes_k:
                                     if pred[k_idx] == 1 and k_idx != class_idx:
                                         prob_k_j *= mapping['class_probabilities'][k_idx, class_idx]
-
                             prob_j_ks_x = prob_j * prob_k_j * prob_x_j
                             cond_prob_threshold = mc_j['cond_prob_threshold'][class_idx]
-
-                            print(f"    - Checking Class {class_idx} (as new):")
-                            print(f"      - Calculated Prob P(y_j|...): {prob_j_ks_x:.6f}")
-                            print(f"      - Threshold to beat:         {cond_prob_threshold:.6f}")
-
                             if prob_j_ks_x >= cond_prob_threshold:
                                 mc_j['average_output'][0] += np.exp(-neuron_j_dist)
                                 mc_j['average_output'][1] += 1
                                 pred[class_idx] = 1
-                                print("      - DECISION: PREDICTED (1)")
-
-                            else:
-                                print("      - DECISION: NOT PREDICTED (0)")
-            print(f"\n  --- FINAL PREDICTION VECTOR (first 15 values): {pred[:15].astype(int)} ---")
 
             if winner_dist > radius_factor_2:
                 indexes_unknown_classified.append(i)
@@ -267,7 +231,6 @@ def kohonen_online_bayes_nd(mapping: dict, online_dataset: np.ndarray, init_n: f
 
             if update_model_info:
                 winner_obj = {'nn_index': indices, 'nn_dist': distances}
-
                 mapping = update_model_information(mapping, x.flatten(), time_stamp, n0, winner_obj, 0)
                 mapping = update_class_totals_probabilities(mapping, pred.reshape(1, -1), 1,
                                                             initial_number_classes, 0,
@@ -278,7 +241,6 @@ def kohonen_online_bayes_nd(mapping: dict, online_dataset: np.ndarray, init_n: f
 
     # Assemble final results
     predictions_matrix = np.array(all_predictions)
-    # Re-index the predictions matrix to match original instance indices
     final_predictions = pd.DataFrame(np.zeros((len(online_dataset), initial_number_classes)),
                                      index=np.arange(len(online_dataset)))
     if len(all_pred_indices) > 0:
@@ -293,5 +255,4 @@ def kohonen_online_bayes_nd(mapping: dict, online_dataset: np.ndarray, init_n: f
         'time_stamp_stm_removed': time_stamp_stm_removed,
         'mapping': mapping
     }
-
     return results

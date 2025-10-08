@@ -41,7 +41,7 @@ simulated_som_map = {
 
 # 3. Execução das Funções do seu Código
 # 3.1. Primeiro, calculamos o output médio dos neurônios.
-python_avg_outputs = get_average_neuron_outputs(simulated_som_map, num_micro_clusters=6) # 6 para cobrir o ID 5
+python_avg_outputs = get_average_neuron_outputs(simulated_som_map) # 6 para cobrir o ID 5
 # 3.2. Agora, calculamos os thresholds. A função modifica a lista 'micro_clusters' internamente.
 python_mc_with_thresholds = get_cond_probabilities_neurons(
     micro_clusters, class_probabilities, python_avg_outputs

@@ -76,6 +76,16 @@ def main():
     online_dataset = test_data.iloc[:, test_feature_indices].values
     online_classes = test_data.iloc[:, test_label_indices]
 
+    # >>> ADICIONE ESTE BLOCO PARA REDUZIR O DATASET <<<
+    print("\n!!! AVISO: Usando apenas uma fração do dataset para teste de memória !!!")
+    num_train_samples = 10000
+    num_test_samples = 4000
+    offline_dataset = offline_dataset[:num_train_samples]
+    offline_classes = offline_classes.iloc[:num_train_samples]
+    online_dataset = online_dataset[:num_test_samples]
+    online_classes = online_classes.iloc[:num_test_samples]
+    # >>> FIM DO BLOCO <<<
+
     # Handle the 'novel_classes' parameter to exclude them from initial training
     if 'novel_classes' in parameters and parameters['novel_classes'] != 0:
         # Ensure novel_classes is a list of integers
@@ -150,7 +160,7 @@ def main():
     print("\nDEBUGGING: Running online phase for the first instance only...")
     online_results = kohonen_online_bayes_nd(
         mapping=mapping,
-        online_dataset=online_dataset_scaled[:1],
+        online_dataset=online_dataset_scaled,
         init_n=init_n,
         novel_classes=novel_classes,
         update_model_info=update_model_info,

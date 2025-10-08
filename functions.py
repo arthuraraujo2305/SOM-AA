@@ -136,87 +136,72 @@ def compute_micro_clusters(som_map: dict, offline_classes: pd.DataFrame, min_ex:
 
     return results
 
-def get_average_neuron_outputs(som_map: dict, num_micro_clusters: int) -> list:
+def get_average_neuron_outputs(som_map: dict) -> dict:
     """
-    Computes the average output for each neuron.
-
-    The output for a single sample is calculated as exp(-distance). This function
-    calculates the sum of these outputs and the total count for each neuron.
+    Computes the average output for each neuron that has associated data points.
+    Returns a dictionary mapping neuron_id to its [sum_outputs, count].
     """
-
-    average_outputs = []
-
-    # Convert to NumPy arrays for efficient boolean indexing
+    average_outputs = {}
     unit_classif = np.array(som_map['unit.classif'])
     distances = np.array(som_map['distances'])
 
-    for i in range(1, num_micro_clusters + 1):
-        # Find all distances for samples mapped to the current neuron 'i'
-        neuron_distances = distances[unit_classif == i]
+    # Itera sobre os IDs únicos de neurônios que aparecem no mapeamento
+    unique_neuron_ids = np.unique(unit_classif)
+
+    for neuron_id in unique_neuron_ids:
+        # Encontra as distâncias para todas as amostras mapeadas para o neurônio atual
+        neuron_distances = distances[unit_classif == neuron_id]
 
         if len(neuron_distances) > 0:
-            # Calculate exp(-distance) for all found distances at once
             outputs = np.exp(-neuron_distances)
-
-            # Append the sum of outputs and the count of samples
-            average_outputs.append([outputs.sum(), len(neuron_distances)])
+            average_outputs[neuron_id] = [outputs.sum(), len(neuron_distances)]
         else:
-            # If a neuron has no samples, append [0, 0]
-            average_outputs.append([0, 0])
+            average_outputs[neuron_id] = [0, 0]
 
     return average_outputs
 
 def get_cond_probabilities_neurons(micro_clusters: list, class_probabilities: np.ndarray,
-                                   average_neuron_outputs: list) -> list:
+                                   average_neuron_outputs: dict) -> list:
     """
     Calculates the conditional probability thresholds for each class within each neuron.
-
-    This is used in the offline phase to set initial thresholds. The threshold is based
-    on the prior probability of the class, the conditional probability of other
-    co-occurring classes, and the neuron's average output.
+    This version uses a dictionary for average_neuron_outputs for robust lookup.
     """
-
-    # Using enumerate to get both the index and the item, which is cleaner
-    for i, mc in enumerate(micro_clusters):
+    for mc in micro_clusters:
         prototype_vector = mc['prototype_vector']
-        # Find indices of classes that are active in this neuron's prototype
         active_classes_indices = np.where(prototype_vector > 0)[0]
+        neuron_id = mc['neuron_id']
+
+        # Busca o output médio para este neurônio específico no dicionário
+        # Se o neurônio não tiver outputs (caso raro), usa [0, 0] como padrão
+        sum_outputs, count_outputs = average_neuron_outputs.get(neuron_id, [0, 0])
+
+        if count_outputs > 0:
+            avg_output = sum_outputs / count_outputs
+        else:
+            avg_output = 0
+
+        # Se o output médio for zero, todos os thresholds serão zero.
+        if avg_output == 0:
+            # Preenche os thresholds com zero e continua para o próximo micro-cluster
+            mc['cond_prob_threshold'] = np.zeros(len(prototype_vector))
+            mc['average_output'] = [sum_outputs, count_outputs]
+            continue
 
         for class_idx in active_classes_indices:
-            # P(y_j), the prior probability of the current class
             prob_j = class_probabilities[class_idx, class_idx]
 
-            # This term represents the product of P(y_k|y_j) for all other
-            # co-occurring active classes k.
             prob_k_j = 1.0
             for k_idx in active_classes_indices:
                 if class_idx != k_idx:
-                    # In class_probabilities, P(k|j) is stored at [k, j]
                     prob_k_j *= class_probabilities[k_idx, class_idx]
 
-            # The weight factor is the value from the prototype vector itself
             weight_factor = prototype_vector[class_idx]
-
-            # p(x|y_j), the average output of the neuron, calculated from the sum and count
-            sum_outputs = average_neuron_outputs[i][0]
-            count_outputs = average_neuron_outputs[i][1]
-
-            # Add a check to prevent division by zero
-            if count_outputs > 0:
-                avg_output = sum_outputs / count_outputs
-            else:
-                avg_output = 0 # If no samples, the average output is zero
-
-            # Final probability p(y_j | y_k, x) calculation
             prob_j_ks_x = prob_j * prob_k_j * avg_output
-
-            # The final threshold is weighted by the prototype vector value
             threshold = prob_j_ks_x * np.exp(-(1 - weight_factor))
 
-            # Update the micro-cluster's threshold for this specific class
             mc['cond_prob_threshold'][class_idx] = threshold
 
-            mc['average_output'] = average_neuron_outputs[i]
+        mc['average_output'] = [sum_outputs, count_outputs]
 
     return micro_clusters
 
