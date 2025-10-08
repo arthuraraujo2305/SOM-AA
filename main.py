@@ -9,7 +9,7 @@ import pandas as pd
 
 from functions import get_parameter_values
 from functions import macro_precision_recall_fmeasure_windows
-from kohonen import kohonen_offline_global, kohonen_online_bayes_nd
+from kohonen import kohonen_offline_global, kohonen_online_bayes_nd, kohonen_online_baseline_predictor
 
 
 def load_arff_data(file_path):
@@ -76,16 +76,6 @@ def main():
     online_dataset = test_data.iloc[:, test_feature_indices].values
     online_classes = test_data.iloc[:, test_label_indices]
 
-    # >>> ADICIONE ESTE BLOCO PARA REDUZIR O DATASET <<<
-    print("\n!!! AVISO: Usando apenas uma fração do dataset para teste de memória !!!")
-    num_train_samples = 10000
-    num_test_samples = 4000
-    offline_dataset = offline_dataset[:num_train_samples]
-    offline_classes = offline_classes.iloc[:num_train_samples]
-    online_dataset = online_dataset[:num_test_samples]
-    online_classes = online_classes.iloc[:num_test_samples]
-    # >>> FIM DO BLOCO <<<
-
     # Handle the 'novel_classes' parameter to exclude them from initial training
     if 'novel_classes' in parameters and parameters['novel_classes'] != 0:
         # Ensure novel_classes is a list of integers
@@ -120,30 +110,21 @@ def main():
 
     print("Data standardized successfully.")
 
-    print("\n--- Starting Offline Phase ---")
+    MODEL_FILE_TO_LOAD = "Results/mediamill-test-16.21.08-model-10.pkl"
 
-    # Extract the necessaries parameters of the dictionary to pass to the function
-    # This turns the function call cleaner and readable
-    num_iterations = int(parameters['num_iterations'])
-    init_n = parameters['n0']
-    final_n = parameters['n1']
-    grid_d = int(parameters['grid_dimension'])
-    tr_mode = parameters['train_mode']
-    min_ex = int(parameters['min_examples_cluster'])
+    print(f"\n--- SKIPPING OFFLINE PHASE ---")
+    print(f"Loading pre-trained model from: {MODEL_FILE_TO_LOAD}")
 
-    mapping = kohonen_offline_global(
-        offline_dataset=offline_dataset_scaled,
-        offline_classes=offline_classes,
-        num_it=num_iterations,
-        init_n=init_n,
-        final_n=final_n,
-        grid_d=grid_d,
-        tr_mode=tr_mode,
-        min_ex=min_ex
-    )
+    if not os.path.exists(MODEL_FILE_TO_LOAD):
+        print(f"ERRO: Arquivo do modelo não encontrado! Rode o treinamento completo primeiro.")
+        exit()
 
-    print("--- Offline Phase Completed ---")
-    print("Model mapping created successfully.")
+    with open(MODEL_FILE_TO_LOAD, 'rb') as f:
+    # que inclui o 'mapping' de que precisamos.
+        previous_results = pickle.load(f)
+        mapping = previous_results['mapping']
+
+    print("Model mapping loaded successfully.")
 
     print("\n--- Starting Online Phase ---")
 
