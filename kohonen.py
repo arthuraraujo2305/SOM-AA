@@ -144,8 +144,8 @@ def kohonen_online_bayes_nd(mapping: dict, online_dataset: np.ndarray, init_n: f
                 prob_j_ks_x = prob_j_prior * prob_k_j_cumulative * prob_x_j
                 cond_prob_threshold = mc_j['cond_prob_threshold'][class_idx]
 
-                # Crucial Fix: Only predict if the calculated probability is greater than zero,
-                # to avoid the "0 >= 0" bug.
+                # Fix: Only predict if the calculated probability is greater than zero,
+                # to avoid the "0 >= 0" "bug" that was happening
                 if prob_j_ks_x > 0 and prob_j_ks_x >= cond_prob_threshold:
                     pred[class_idx] = 1
 
