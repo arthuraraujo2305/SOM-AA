@@ -5,46 +5,38 @@ from sklearn.neighbors import NearestNeighbors
 
 
 def euclidean_distance(x: np.ndarray, y: np.ndarray) -> float:
-
-    distance = np.sqrt(np.sum((x - y)**2))
-
-    return distance
+    """Calculates the Euclidean distance between two numpy vectors."""
+    return np.sqrt(np.sum((x - y)**2))
 
 def compute_label_cardinality(offline_classes: pd.DataFrame) -> float:
-
+    """Calculates the label cardinality (average number of labels per instance)."""
     total_labels = offline_classes.values.sum()
     num_instances = offline_classes.shape[0]
-
-    return total_labels / num_instances
+    return total_labels / num_instances if num_instances > 0 else 0
 
 def get_probabilities(classes: pd.DataFrame, i: int, j: int) -> dict:
-
-    if i == j:
+    """
+    Calculates P(i) if i==j, or P(i|j) if i!=j.
+    Also returns the total count used for the numerator.
+    """
+    if i == j:  # Calculate prior probability P(i)
         total_i = classes.iloc[:, i].sum()
         total_instances = len(classes)
-
-        if total_instances == 0:
-            probability = 0
-        else:
-            probability = total_i / total_instances
+        probability = total_i / total_instances if total_instances > 0 else 0
         result = {'prob': probability, 'total': int(total_i)}
-
-    else:
+    else:  # Calculate conditional probability P(i|j)
         total_j = classes.iloc[:, j].sum()
-
         if total_j == 0:
             probability = 0
             intersection_total = 0
-
         else:
             intersection_total = ((classes.iloc[:, i] == 1) & (classes.iloc[:, j] == 1)).sum()
             probability = intersection_total / total_j
-
         result = {'prob': probability, 'total': int(intersection_total)}
-
     return result
 
-def compute_initial_class_probabilities_totals(offline_classes: pd.DataFrame)-> tuple:
+def compute_initial_class_probabilities_totals(offline_classes: pd.DataFrame) -> tuple:
+    """Computes the prior/conditional probability matrix and the counts matrix from the offline data."""
     num_classes = offline_classes.shape[1]
     class_probabilities = np.zeros((num_classes, num_classes))
     class_totals = np.zeros((num_classes, num_classes))
@@ -53,138 +45,81 @@ def compute_initial_class_probabilities_totals(offline_classes: pd.DataFrame)-> 
             class_prob_totals = get_probabilities(offline_classes, i, j)
             class_probabilities[i, j] = class_prob_totals['prob']
             class_totals[i, j] = class_prob_totals['total']
-
     return class_probabilities, class_totals
 
 def get_parameter_values(param_file: str) -> dict:
-    """
-    Lê um arquivo de configuração e retorna os parâmetros em um dicionário.
-
-    O arquivo deve ter o formato 'parametro = valor' em cada linha.
-    """
+    """Reads a 'key = value' configuration file and returns a dictionary of parameters."""
     parameters = {}
     with open(param_file, 'r', encoding='utf-8') as f:
         for line in f:
-            # Ignora linhas vazias ou comentários
+            # Ignore empty lines or comments
             if line.strip() and not line.strip().startswith('#'):
                 key, value = line.split('=', 1)
-
-                # Limpa espaços em branco da chave e do valor
                 key = key.strip().replace('.', '_')
                 value = value.strip()
-
-                # Tenta converter o valor para um número (float)
-                # Se não conseguir, mantém como string
                 try:
-                    # Caso especial: múltiplos valores separados por vírgula
+                    # Handle comma-separated values for lists
                     if ',' in value:
-                        # Converte cada parte para float, se possível
                         parts = [float(part) for part in value.split(',')]
                         parameters[key] = parts if len(parts) > 1 else parts[0]
                     else:
                         parameters[key] = float(value)
                 except ValueError:
-                    # Se não for um número, salva como texto
-                    parameters[key] = value
-
-
+                    parameters[key] = value  # Keep as string if conversion fails
     return parameters
 
 def compute_micro_clusters(som_map: dict, offline_classes: pd.DataFrame, min_ex: int) -> dict:
-    """
-    Computes the properties of micro-clusters from a trained SOM map.
-
-    This function filters neurons based on a minimum number of examples,
-    calculates various properties for each valid neuron (micro-cluster), and
-    returns a data structure containing this information
-    """
-
-    # Count the occurrences of each neuron (equivalent to R's table())
+    """Computes the properties of micro-clusters from a trained SOM map."""
     neuron_counts = Counter(som_map['unit.classif'])
-
-    # Filter to keep only neurons with a minimum number of examples
-    # .sort() is added to ensure a consistent order
     valid_neurons = sorted([neuron for neuron, count in neuron_counts.items() if count >= min_ex])
-
     micro_clusters = []
 
-    # Loop through the valid neurons to calculate their properties
     for neuron_id in valid_neurons:
         indexes = np.where(som_map['unit.classif'] == neuron_id)[0]
-
         prototype_vector = offline_classes.iloc[indexes].mean(axis=0).values
 
-        # Create a dictionary for the current micro-cluster. This is much more
-        # readable than using numeric indices like in the R code (e.g., micro.clusters[[pos]][[5]]).
         micro_cluster_dict = {
             'neuron_id': neuron_id,
-            'centroid': som_map['codes'][neuron_id],  # Neuron's weight vector
+            'centroid': som_map['codes'][neuron_id],
             'num_instances': len(indexes),
             'prototype_vector': prototype_vector,
-            'timestamp_creation': 0,
-            'class_position': 0,
-            'cond_prob_threshold': np.full(offline_classes.shape[1], 9.0)  # Creates an array filled with 9s
+            'cond_prob_threshold': np.zeros(offline_classes.shape[1])
         }
-
-        # Add the micro-cluster dictionary to our list
         micro_clusters.append(micro_cluster_dict)
 
-    results = {
-        'som_map': som_map,
-        'micro_clusters': micro_clusters
-    }
-
+    results = {'som_map': som_map, 'micro_clusters': micro_clusters}
     return results
 
 def get_average_neuron_outputs(som_map: dict) -> dict:
-    """
-    Computes the average output for each neuron that has associated data points.
-    Returns a dictionary mapping neuron_id to its [sum_outputs, count].
-    """
+    """Computes the sum of outputs and count for each neuron that has associated data points."""
     average_outputs = {}
     unit_classif = np.array(som_map['unit.classif'])
     distances = np.array(som_map['distances'])
-
-    # Itera sobre os IDs únicos de neurônios que aparecem no mapeamento
     unique_neuron_ids = np.unique(unit_classif)
 
     for neuron_id in unique_neuron_ids:
-        # Encontra as distâncias para todas as amostras mapeadas para o neurônio atual
         neuron_distances = distances[unit_classif == neuron_id]
-
         if len(neuron_distances) > 0:
             outputs = np.exp(-neuron_distances)
             average_outputs[neuron_id] = [outputs.sum(), len(neuron_distances)]
         else:
             average_outputs[neuron_id] = [0, 0]
-
     return average_outputs
 
 def get_cond_probabilities_neurons(micro_clusters: list, class_probabilities: np.ndarray,
                                    average_neuron_outputs: dict) -> list:
-    """
-    Calculates the conditional probability thresholds for each class within each neuron.
-    This version uses a dictionary for average_neuron_outputs for robust lookup.
-    """
+    """Calculates the conditional probability thresholds for each class within each neuron (Offline Phase)."""
     for mc in micro_clusters:
         prototype_vector = mc['prototype_vector']
         active_classes_indices = np.where(prototype_vector > 0)[0]
         neuron_id = mc['neuron_id']
 
-        # Busca o output médio para este neurônio específico no dicionário
-        # Se o neurônio não tiver outputs (caso raro), usa [0, 0] como padrão
         sum_outputs, count_outputs = average_neuron_outputs.get(neuron_id, [0, 0])
+        avg_output = sum_outputs / count_outputs if count_outputs > 0 else 0
 
-        if count_outputs > 0:
-            avg_output = sum_outputs / count_outputs
-        else:
-            avg_output = 0
+        mc['average_output'] = [sum_outputs, count_outputs]
 
-        # Se o output médio for zero, todos os thresholds serão zero.
         if avg_output == 0:
-            # Preenche os thresholds com zero e continua para o próximo micro-cluster
-            mc['cond_prob_threshold'] = np.zeros(len(prototype_vector))
-            mc['average_output'] = [sum_outputs, count_outputs]
             continue
 
         for class_idx in active_classes_indices:
@@ -200,22 +135,17 @@ def get_cond_probabilities_neurons(micro_clusters: list, class_probabilities: np
             threshold = prob_j_ks_x * np.exp(-(1 - weight_factor))
 
             mc['cond_prob_threshold'][class_idx] = threshold
-
-        mc['average_output'] = [sum_outputs, count_outputs]
-
     return micro_clusters
 
 def update_cond_probabilities_neurons(micro_clusters: list, class_probabilities: np.ndarray) -> list:
-    """
-    Updates the conditional probability thresholds for each class within each neuron.
-
-    This is used in the online phase to refresh the thresholds as the model
-    and the micro-clusters' properties evolve with new data.
-    """
-
+    """Updates conditional probability thresholds during the online phase."""
     for mc in micro_clusters:
         prototype_vector = mc['prototype_vector']
         active_classes_indices = np.where(prototype_vector > 0)[0]
+
+        avg_output = mc['average_output'][0] / mc['average_output'][1] if mc['average_output'][1] > 0 else 0
+        if avg_output == 0:
+            continue
 
         for class_idx in active_classes_indices:
             prob_j = class_probabilities[class_idx, class_idx]
@@ -226,16 +156,8 @@ def update_cond_probabilities_neurons(micro_clusters: list, class_probabilities:
                     prob_k_j *= class_probabilities[k_idx, class_idx]
 
             weight_factor = prototype_vector[class_idx]
-
-            if mc['average_output'][1] > 0:
-                avg_output = mc['average_output'][0] / mc['average_output'][1]
-            else:
-                avg_output = 0
-
             prob_j_ks_x = prob_j * prob_k_j * avg_output
-
             threshold = prob_j_ks_x * np.exp(-(1 - weight_factor))
-
             mc['cond_prob_threshold'][class_idx] = threshold
 
     return micro_clusters
@@ -243,23 +165,17 @@ def update_cond_probabilities_neurons(micro_clusters: list, class_probabilities:
 def update_class_totals_probabilities(mapping: dict, pred: np.ndarray, num_pred: int,
                                       initial_number_classes: int, is_novelty: int,
                                       num_offline_instances: int) -> dict:
-    """
-    Updates the class totals and class probability matrices based on new predictions.
-
-    """
+    """Updates class total counts and probability matrices based on new predictions."""
     mapping['total_instances'] += num_pred
 
     if is_novelty == 0 and 'total_instances_np' in mapping:
-        mapping['total_instances_np'] = [count + num_pred for count in mapping['total_instances_np']]
+        for i in range(len(mapping['total_instances_np'])):
+            mapping['total_instances_np'][i] += num_pred
 
     if pred.shape[0] > 0:
         for r in range(pred.shape[0]):
-            # Find the indices of the predicted classes for this instance
-            # Equivalent to R's which(pred[r,] > 0)
             predicted_indices = np.where(pred[r, :] > 0)[0]
-
             if len(predicted_indices) > 0:
-                # Update the co-occurrence counts in the class_totals matrix
                 for idx_i in predicted_indices:
                     for idx_j in predicted_indices:
                         mapping['class_totals'][idx_i, idx_j] += 1
@@ -268,95 +184,50 @@ def update_class_totals_probabilities(mapping: dict, pred: np.ndarray, num_pred:
     num_total_classes = mapping['class_totals'].shape[0]
     for idx_i in range(num_total_classes):
         for idx_j in range(num_total_classes):
-
-            # Case 1: A Novelty Pattern (NP) class's relation to an original class
-            if idx_i >= initial_number_classes and idx_j < initial_number_classes:
-                if mapping['class_totals'][idx_j, idx_j] > 0:
-                    mapping['class_probabilities'][idx_i, idx_j] = mapping['class_totals'][idx_i, idx_j] / mapping['class_totals'][idx_j, idx_j]
-
-            # Case 2: Relation between two NP classes
-            elif idx_i >= initial_number_classes and idx_j >= initial_number_classes:
-                if idx_i == idx_j: # Prior probability of an NP
+            total_j = mapping['class_totals'][idx_j, idx_j]
+            # Handles all cases: original, novelty, and mixed relations
+            if idx_i == idx_j: # Prior probability P(i)
+                if idx_i >= initial_number_classes: # Novelty class prior
                     total_np_instances = mapping['total_instances_np'][idx_j - initial_number_classes]
-                    if total_np_instances > 0:
-                        mapping['class_probabilities'][idx_i, idx_j] = mapping['class_totals'][idx_i, idx_j] / total_np_instances
-                else: # Conditional probability between two NPs
-                    if mapping['class_totals'][idx_j, idx_j] > 0:
-                        mapping['class_probabilities'][idx_i, idx_j] = mapping['class_totals'][idx_i, idx_j] / mapping['class_totals'][idx_j, idx_j]
-
-            # Case 3: An original class's relation to an NP class
-            elif idx_i < initial_number_classes and idx_j >= initial_number_classes:
-                if mapping['class_totals'][idx_j, idx_j] > 0:
-                    mapping['class_probabilities'][idx_i, idx_j] = mapping['class_totals'][idx_i, idx_j] / mapping['class_totals'][idx_j, idx_j]
-
-            # Case 4: Relation between two original classes
-            else:
-                if idx_i == idx_j: # Prior probability P(i)
-                    if mapping['total_instances'] > 0:
-                        mapping['class_probabilities'][idx_i, idx_j] = mapping['class_totals'][idx_i, idx_j] / mapping['total_instances']
-                else: # Conditional probability P(i|j)
-                    if mapping['class_totals'][idx_j, idx_j] > 0:
-                        mapping['class_probabilities'][idx_i, idx_j] = mapping['class_totals'][idx_i, idx_j] / mapping['class_totals'][idx_j, idx_j]
+                    mapping['class_probabilities'][idx_i, idx_j] = mapping['class_totals'][idx_i, idx_j] / total_np_instances if total_np_instances > 0 else 0
+                else: # Original class prior
+                    mapping['class_probabilities'][idx_i, idx_j] = mapping['class_totals'][idx_i, idx_j] / mapping['total_instances'] if mapping['total_instances'] > 0 else 0
+            else: # Conditional probability P(i|j)
+                mapping['class_probabilities'][idx_i, idx_j] = mapping['class_totals'][idx_i, idx_j] / total_j if total_j > 0 else 0
 
     return mapping
 
 def update_model_information(mapping: dict, x: np.ndarray, time_stamp: int, n0: float,
                              winner: dict, inst_l: int) -> dict:
-    """
-    Updates the winning neurons' properties and weights based on a new data sample.
-
-    This function implements the SOM learning rule for the online phase.
-    """
-
-    # Get the nearest neurons and their distances from the winner object
+    """Updates the winning neurons' weights based on a new data sample (online learning)."""
     neuron_indices = winner['nn_index'][inst_l]
     distances = winner['nn_dist'][inst_l]
 
-    # Loop through each winning neuron
     for i, neuron_idx in enumerate(neuron_indices):
-        # The neuron_idx in the R code is 1-based and seems to be the index
-        # for the micro_clusters list. We'll assume 0-based index here.
-
-        # Get the specific micro-cluster and distance for this iteration
         micro_cluster = next((mc for mc in mapping['micro_clusters'] if mc['neuron_id'] == neuron_idx), None)
-
         if micro_cluster is None:
             continue
-        distance = distances[i]
 
-        # Update the micro-cluster's metadata
+        distance = distances[i]
         micro_cluster['num_instances'] += 1
-        # Let's add a new key for the timestamp for clarity
         micro_cluster['timestamp_last_update'] = time_stamp
 
-        # Calculate the delta (weight change) using the SOM learning rule
-        # This is a vector operation thanks to NumPy
         delta = n0 * (x - micro_cluster['centroid']) * np.exp(-distance)
 
-        # Apply the delta to update the neuron's centroid (weight vector)
+        # Apply the delta to the centroid in both the micro_cluster and the main SOM map
         micro_cluster['centroid'] += delta
-        # Also update the centroid in the main SOM map structure for consistency
         mapping['som_map']['codes'][neuron_idx] += delta
 
     return mapping
 
 def macro_precision_recall_fmeasure_windows(true_labels: np.ndarray, predicted_labels: np.ndarray,
                                             num_evaluation_windows: int) -> dict:
-    """
-    Calculates macro-averaged precision, recall, and F-measure across evaluation windows.
-
-    The logic is a direct translation of the R version, but uses NumPy vectorization
-    for efficient calculation of TP, FP, and FN, avoiding the innermost loop.
-    """
-
+    """Calculates macro-averaged precision, recall, and F-measure across evaluation windows."""
     num_labels = true_labels.shape[1]
     num_examples = true_labels.shape[0]
     results = {}
-    ma_precision_window = []
-    ma_recall_window = []
-    ma_fmeasure_window = []
+    ma_precision_window, ma_recall_window, ma_fmeasure_window = [], [], []
 
-    # --- Logic to define window sizes (same as R) ---
     num_examples_window = num_examples // num_evaluation_windows
     evaluation_windows = np.full(num_evaluation_windows, num_examples_window)
     rest = num_examples - (num_examples_window * num_evaluation_windows)
@@ -364,59 +235,44 @@ def macro_precision_recall_fmeasure_windows(true_labels: np.ndarray, predicted_l
         evaluation_windows[:rest] += 1
 
     start_idx = 0
-    beta = 1  # For F-measure calculation
+    beta = 1.0
 
     for window_size in evaluation_windows:
         end_idx = start_idx + window_size
-
-        # Get the data for the current window
         true_window = true_labels[start_idx:end_idx]
         predicted_window = predicted_labels[start_idx:end_idx]
 
-        total_prec = 0
-        total_recall = 0
-        total_fmeasure = 0
+        total_prec_window, total_recall_window, total_fmeasure_window = 0, 0, 0
 
-        for j in range(num_labels):  # Loop through each label
-            # --- Vectorized TP, FP, FN calculation ---
-            # This replaces the innermost loop from the R code
+        for j in range(num_labels):
             tp = np.sum((true_window[:, j] == 1) & (predicted_window[:, j] == 1))
             fp = np.sum((true_window[:, j] == 0) & (predicted_window[:, j] == 1))
             fn = np.sum((true_window[:, j] == 1) & (predicted_window[:, j] == 0))
 
-            # --- Precision, Recall, F-measure logic (direct translation from R) ---
-            # Handle edge cases just like the original Mulan-inspired R code
+            # Mulan-inspired edge case handling for precision and recall
             if tp + fp + fn == 0:
-                prec = 1.0
-            elif tp + fp == 0:
-                prec = 0.0
+                prec = 1.0; recall = 1.0
             else:
-                prec = tp / (tp + fp)
-
-            if tp + fn == 0: # Note: R code had tp+fp+fn==0 here, but tp+fn is more standard
-                recall = 1.0 if tp + fp + fn == 0 else 0.0
-            else:
-                recall = tp / (tp + fn)
+                prec = tp / (tp + fp) if tp + fp > 0 else 0.0
+                recall = tp / (tp + fn) if tp + fn > 0 else 0.0
 
             if prec + recall == 0:
                 fmeasure = 0.0
             else:
                 beta2 = beta * beta
                 fmeasure = ((beta2 + 1) * prec * recall) / (beta2 * prec + recall)
-                # Fallback for the case where F-measure is NaN
-                if np.isnan(fmeasure):
-                    fmeasure = 0.0
 
-            total_prec += prec
-            total_recall += recall
-            total_fmeasure += fmeasure
+            total_prec_window += prec
+            total_recall_window += recall
+            total_fmeasure_window += fmeasure
 
-        ma_precision_window.append(total_prec / num_labels)
-        ma_recall_window.append(total_recall / num_labels)
-        ma_fmeasure_window.append(total_fmeasure / num_labels)
+        ma_precision_window.append(total_prec_window / num_labels if num_labels > 0 else 0)
+        ma_recall_window.append(total_recall_window / num_labels if num_labels > 0 else 0)
+        ma_fmeasure_window.append(total_fmeasure_window / num_labels if num_labels > 0 else 0)
 
         start_idx = end_idx
 
+    # Final score is the mean of the scores from each window
     results['ma_precision'] = np.mean(ma_precision_window)
     results['ma_recall'] = np.mean(ma_recall_window)
     results['ma_fmeasure'] = np.mean(ma_fmeasure_window)
@@ -428,65 +284,49 @@ def macro_precision_recall_fmeasure_windows(true_labels: np.ndarray, predicted_l
     return results
 
 def compute_radius_factor_mc(micro_clusters: list, som_map: dict, data: np.ndarray) -> list:
-    """
-    Computes radius factors for each micro-cluster for novelty detection.
-    """
-
+    """Computes radius factors for each micro-cluster for novelty detection."""
     unit_classif = som_map['unit.classif']
 
     for mc in micro_clusters:
         neuron_id = mc['neuron_id']
         centroid = mc['centroid']
-
-        # Find indices and data points mapped to the current neuron
         indexes_mapped = np.where(unit_classif == neuron_id)[0]
         data_mapped = data[indexes_mapped]
 
-        # If there's only one or zero points, we can't calculate these radii
         if len(data_mapped) <= 1:
             mc['radius_factor_1'] = 0
             mc['radius_factor_2'] = 0
             continue
 
-        # --- Calculate Radius 1 (rFact): Max distance from centroid to any point ---
+        # Radius 1: Max distance from the centroid to any point in the cluster.
         distances_from_centroid = np.linalg.norm(data_mapped - centroid, axis=1)
         r_fact = np.max(distances_from_centroid)
 
-        # --- Calculate Radius 2 (nd.rFact): The complex part ---
-        # Find the most isolated point (largest distance to its nearest neighbor)
-        # We ask for 2 neighbors because the first neighbor of any point is itself
+        # Radius 2: A more complex novelty radius based on internal cluster density.
+        # Find the most isolated point (largest distance to its nearest neighbor).
+        # We ask for 2 neighbors because the first neighbor of any point is itself (distance 0).
         nbrs = NearestNeighbors(n_neighbors=2).fit(data_mapped)
         distances_knn, indices_knn = nbrs.kneighbors(data_mapped)
 
-        # The distance to the actual nearest neighbor is in the second column
         nearest_neighbor_distances = distances_knn[:, 1]
         max_dist = np.max(nearest_neighbor_distances)
-
-        # Find all points that are the most isolated
         isolated_indices = np.where(nearest_neighbor_distances == max_dist)[0]
 
-        # Tie-breaking rule from R: if more than one, pick the one farthest from the centroid
+        # Tie-breaking: if multiple points are equally isolated, pick the one farthest from the centroid.
         if len(isolated_indices) > 1:
             isolated_distances_from_centroid = np.linalg.norm(data_mapped[isolated_indices] - centroid, axis=1)
             isolated_point_idx = isolated_indices[np.argmax(isolated_distances_from_centroid)]
         else:
             isolated_point_idx = isolated_indices[0]
 
-        # --- While loop logic to find the novelty radius ---
+        # This loop walks from the isolated point inwards via nearest neighbors
+        # to find a boundary for novelty detection.
         nd_rfact = float('inf')
         current_pos = isolated_point_idx
         previous_pos = -1
-
-        # This loop walks from the isolated point inwards via nearest neighbors
-        # until the neighbor's distance to the centroid is less than the max radius (r_fact)
         while nd_rfact >= r_fact and current_pos != previous_pos:
-            # Get the nearest neighbor of the current point
             neighbor_idx = indices_knn[current_pos, 1]
-
-            # Calculate this neighbor's distance to the main centroid
             nd_rfact = np.linalg.norm(data_mapped[neighbor_idx] - centroid)
-
-            # Move to the next point for the next iteration
             previous_pos = current_pos
             current_pos = neighbor_idx
 

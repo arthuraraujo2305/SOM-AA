@@ -1,30 +1,33 @@
 # Training mode for the Kohonen map
 train.mode = pbatch
 
-# Initial and final learning rate for kohonen
+# Initial learning rate for the SOM
 n0 = 0.05
+
+# Final learning rate (not used by som.train(), but kept for consistency)
 n1 = 0.01
 
-# Dimension of the grid of neurons
+# Dimension of the neuron grid (e.g., 10 for a 10x10 grid)
 grid.dimension = 10
 
-# Num iterations for Kohonen algorithm
+# Number of epochs for the SOM training
+# Note: This is interpreted as epochs (full passes over the dataset)
 num.iterations = 1000
 
-# Path datasets (com a extensão .arff adicionada)
+# Paths to the datasets
 train.data = datasets/mediamill-train.arff
 test.data = datasets/mediamill-test.arff
 
-# Number of known classes
+# Number of known classes (for novelty detection, not used in this config)
 num.classes = 15
 
-# Number of windows for evaluation
+# Number of windows for evaluation metrics
 num.evaluation.windows = 50
 
-# Number of executions of the experiment
+# Number of times to repeat the experiment (for statistical significance)
 num.experiments = 10
 
-# Updade information about the weight vectors and micro-clusters when classifying an example?
+# Update model weights during the online phase? (0 = False, 1 = True)
 update.model.info = 0
 
 # Window size to forget outdated examples
@@ -33,14 +36,14 @@ omega = 3000
 # Short-term memory storage limit threshold
 theta = 100
 
-# Mininum number of examples for a valid cluster (min number of examples to create a new neuron)
+# Minimum number of examples for a valid cluster
 min.examples.cluster = 3
 
-# Indexes of the novelty classes
+# Indexes of the novelty classes (0 = disabled)
 novel.classes = 0
 
-# The interval of examples to look at the short term memory
+# The interval of examples to check the short-term memory
 window.stm.check = 100
 
-# Should we consider the unknown examples as empty classification?
+# Should unknown examples be treated as empty predictions? (0 = False, 1 = True)
 empty.predictions = 0

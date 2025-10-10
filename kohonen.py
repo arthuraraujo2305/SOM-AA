@@ -8,19 +8,12 @@ from functions import (compute_initial_class_probabilities_totals,
                        compute_label_cardinality,
                        compute_micro_clusters,
                        get_average_neuron_outputs,
-                       get_cond_probabilities_neurons,
-                       update_model_information,
-                       update_cond_probabilities_neurons,
-                       update_class_totals_probabilities,
-                       )
-
-# Em kohonen.py, substitua a função inteira por esta versão CORRIGIDA E SIMPLIFICADA:
+                       get_cond_probabilities_neurons)
 
 def kohonen_offline_global(offline_dataset: np.ndarray, offline_classes: pd.DataFrame, num_it: int,
                            init_n: float, final_n: float, grid_d: int, tr_mode: str, min_ex: int) -> dict:
     """
-    Performs the offline training phase.
-    THIS IS THE CORRECTED VERSION using MiniSom's built-in training method.
+    Performs the offline training phase using MiniSom's built-in training method.
     """
     print("\nOffline phase - building maps!")
 
@@ -28,43 +21,38 @@ def kohonen_offline_global(offline_dataset: np.ndarray, offline_classes: pd.Data
     class_probabilities, class_totals = compute_initial_class_probabilities_totals(offline_classes)
     z = compute_label_cardinality(offline_classes)
 
-    # 2. Initialize and Train the SOM using MiniSom
+    # 2. Initialize and Train the SOM
     num_features = offline_dataset.shape[1]
     np.random.seed(10)
-
-    # Sigma inicial é um parâmetro importante. O MiniSom o decai para perto de 0.
     initial_sigma = grid_d / 2.0
 
     som = MiniSom(x=grid_d, y=grid_d, input_len=num_features,
                   sigma=initial_sigma,
-                  learning_rate=init_n, # MiniSom usa isso como a taxa de aprendizado inicial
+                  learning_rate=init_n,
                   neighborhood_function='gaussian',
                   random_seed=10)
 
-    # Inicializa os pesos usando PCA, que é nossa melhor abordagem até agora.
+    # Initialize weights using Principal Component Analysis for a better starting map.
     print("Initializing SOM weights with PCA...")
     som.pca_weights_init(offline_dataset)
 
-    # --- AQUI ESTÁ A MUDANÇA FUNDAMENTAL ---
-    # Substituímos nosso loop de treinamento manual pelo método de treino da própria biblioteca.
-    # Ele gerencia o decaimento do sigma e da taxa de aprendizado internamente.
+    # Train the SOM using the library's built-in method, which handles decay internally.
     print(f"Starting SOM training for {num_it} iterations...")
-    som.train(offline_dataset, num_it, verbose=True) # verbose=True mostrará o progresso
+    som.train(offline_dataset, num_it, verbose=True)
     print("SOM training completed.")
-    # ------------------------------------
 
-    # 3. Post-processing (O resto da função permanece o mesmo)
+    # 3. Post-processing: Map data points to neurons and calculate distances
     unit_classif = np.zeros(len(offline_dataset), dtype=int)
     distances = np.zeros(len(offline_dataset), dtype=float)
-
+    weights = som.get_weights() # Cache weights for efficiency
     for i, x in enumerate(offline_dataset):
         winner_pos = som.winner(x)
         winner_idx = np.ravel_multi_index(winner_pos, (grid_d, grid_d))
         unit_classif[i] = winner_idx
-        distances[i] = np.linalg.norm(x - som.get_weights()[winner_pos])
+        distances[i] = np.linalg.norm(x - weights[winner_pos])
 
     som_map = {
-        'codes': som.get_weights().reshape(-1, num_features),
+        'codes': weights.reshape(-1, num_features),
         'unit.classif': unit_classif,
         'distances': distances
     }
@@ -84,6 +72,7 @@ def kohonen_offline_global(offline_dataset: np.ndarray, offline_classes: pd.Data
         'class_probabilities': class_probabilities,
         'class_totals': class_totals,
         'total_instances': len(offline_dataset),
+        # Placeholders for novelty detection features
         'NP': 0,
         'total_instances_np': [],
         'novel_patterns_time_stamp': []
@@ -99,12 +88,10 @@ def kohonen_online_bayes_nd(mapping: dict, online_dataset: np.ndarray, init_n: f
                             novel_classes: list, update_model_info: bool,
                             num_offline_instances: int) -> dict:
     """
-    Performs the online phase. This version is a more faithful translation
-    of the R code's iterative probability calculation logic.
+    Performs the online prediction phase using the Bayesian logic from the paper.
+    Includes the fix for the "zero vs. zero" comparison bug.
     """
     print("\nOnline phase!")
-    time_stamp = 0
-    n0 = init_n
     initial_number_classes = mapping['class_probabilities'].shape[0]
     all_predictions = []
     all_pred_indices = []
@@ -114,8 +101,9 @@ def kohonen_online_bayes_nd(mapping: dict, online_dataset: np.ndarray, init_n: f
         if (i + 1) % 1000 == 0:
             print(f"  Processing instance {i + 1}/{len(online_dataset)}...")
 
-        time_stamp += 1
         x = x_instance.reshape(1, -1)
+
+        # Determine number of nearest neighbors to find
         n_k = int(np.ceil(mapping['z']))
         if n_k % 2 == 0: n_k += 1
 
@@ -127,24 +115,27 @@ def kohonen_online_bayes_nd(mapping: dict, online_dataset: np.ndarray, init_n: f
         distances, indices = nbrs.kneighbors(x)
 
         pred = np.zeros(initial_number_classes)
-        explained = True
 
+        # Iterate through the 'z' closest neurons to make predictions
         z = min(int(np.ceil(mapping['z'])), n_k)
         for j in range(z):
             neuron_j_idx = indices[0][j]
             neuron_j_dist = distances[0][j]
             mc_j = next((mc for mc in mapping['micro_clusters'] if mc['neuron_id'] == neuron_j_idx), None)
+
             if mc_j is None: continue
 
             prototype_j = mc_j['prototype_vector']
             active_classes_in_prototype_j = np.where(prototype_j > 0)[0]
 
+            # Prediction logic based on cumulative probability
             for class_idx in active_classes_in_prototype_j:
                 if pred[class_idx] == 1: continue
 
                 prob_j_prior = mapping['class_probabilities'][class_idx, class_idx]
                 prob_x_j = np.exp(-neuron_j_dist)
 
+                # Calculate cumulative conditional probability based on already predicted labels
                 prob_k_j_cumulative = 1.0
                 predicted_indices = np.where(pred == 1)[0]
                 for pred_idx in predicted_indices:
@@ -153,45 +144,52 @@ def kohonen_online_bayes_nd(mapping: dict, online_dataset: np.ndarray, init_n: f
                 prob_j_ks_x = prob_j_prior * prob_k_j_cumulative * prob_x_j
                 cond_prob_threshold = mc_j['cond_prob_threshold'][class_idx]
 
-                # --- AQUI ESTÁ A CORREÇÃO CRUCIAL ---
+                # Crucial Fix: Only predict if the calculated probability is greater than zero,
+                # to avoid the "0 >= 0" bug.
                 if prob_j_ks_x > 0 and prob_j_ks_x >= cond_prob_threshold:
-                    # ------------------------------------
                     pred[class_idx] = 1
 
-                    if 'average_output' in mc_j:
+                    # Update average output if model update is enabled
+                    if update_model_info and 'average_output' in mc_j:
                         mc_j['average_output'][0] += np.exp(-neuron_j_dist)
                         mc_j['average_output'][1] += 1
 
-        if explained:
-            indexes_explained.append(i)
-            all_predictions.append(pred)
-            all_pred_indices.append(i)
+        # Store prediction for this instance
+        indexes_explained.append(i)
+        all_predictions.append(pred)
+        all_pred_indices.append(i)
 
+        # Logic for updating the model online (if enabled)
+        if update_model_info:
+            # The full update logic would go here
+            pass
+
+    # Assemble the final results dictionary
     predictions_matrix = np.array(all_predictions)
     final_predictions = pd.DataFrame(np.zeros((len(online_dataset), initial_number_classes)), index=np.arange(len(online_dataset)))
     if len(all_pred_indices) > 0:
         final_predictions.iloc[all_pred_indices] = predictions_matrix
-    results = {'predictions': final_predictions, 'indexes_explained': indexes_explained, 'mapping': mapping} # simplificado
+
+    results = {
+        'predictions': final_predictions,
+        'indexes_explained': indexes_explained,
+        'mapping': mapping
+    }
     return results
 
 def kohonen_online_baseline_predictor(mapping: dict, online_dataset: np.ndarray) -> dict:
     """
-    A very simple baseline predictor to test the quality of the SOM map itself.
-    It bypasses the complex Bayesian logic and predicts based on a simple threshold
-    on the winning neuron's prototype vector.
+    A simple baseline predictor used for debugging and analysis.
+    Predicts based on a simple threshold on the winning neuron's prototype vector.
     """
     print("\n!!! RUNNING ONLINE PHASE WITH SIMPLE BASELINE PREDICTOR !!!")
-
     initial_number_classes = mapping['class_probabilities'].shape[0]
     all_predictions = []
-
     neuron_centroids = mapping['som_map']['codes']
 
-    # Process each instance
     for i, x_instance in enumerate(online_dataset):
         if (i + 1) % 1000 == 0:
             print(f"  Processing instance {i + 1}/{len(online_dataset)}...")
-
         x = x_instance.reshape(1, -1)
 
         # Find the single winning neuron
@@ -199,20 +197,16 @@ def kohonen_online_baseline_predictor(mapping: dict, online_dataset: np.ndarray)
         distances, indices = nbrs.kneighbors(x)
         winner_idx = indices[0][0]
 
-        # Find the corresponding micro-cluster
         mc_winner = next((mc for mc in mapping['micro_clusters'] if mc['neuron_id'] == winner_idx), None)
 
         pred = np.zeros(initial_number_classes)
         if mc_winner:
             prototype = mc_winner['prototype_vector']
-            # Simple prediction rule: predict if prototype value is > 0.5
-            pred[prototype > 0.5] = 1
+            pred[prototype > 0.5] = 1 # Simple prediction rule
 
         all_predictions.append(pred)
 
-    # Assemble final results (simplified version)
     predictions_matrix = np.array(all_predictions)
-
     results = {
         'predictions': pd.DataFrame(predictions_matrix),
         'indexes_explained': list(range(len(online_dataset))),
