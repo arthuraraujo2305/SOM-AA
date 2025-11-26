@@ -126,9 +126,22 @@ def get_cond_probabilities_neurons(micro_clusters: list, class_probabilities: np
             prob_j = class_probabilities[class_idx, class_idx]
 
             prob_k_j = 1.0
+            class_prob_row = class_probabilities[class_idx, :].copy()
+            class_prob_row[class_idx] = 0
+
+
+            sorted_indices_ranking = np.argsort(class_prob_row)[::-1]
+
             for k_idx in active_classes_indices:
-                if class_idx != k_idx:
-                    prob_k_j *= class_probabilities[k_idx, class_idx]
+
+                if k_idx < len(sorted_indices_ranking):
+                    ranked_class_id = sorted_indices_ranking[k_idx]
+
+
+                    prob_val = class_probabilities[ranked_class_id, class_idx]
+
+                    if prob_val > 0 and ranked_class_id != class_idx:
+                        prob_k_j *= prob_val
 
             weight_factor = prototype_vector[class_idx]
             prob_j_ks_x = prob_j * prob_k_j * avg_output
