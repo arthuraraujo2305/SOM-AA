@@ -8,7 +8,9 @@ from functions import (compute_initial_class_probabilities_totals,
                        compute_label_cardinality,
                        compute_micro_clusters,
                        get_average_neuron_outputs,
-                       get_cond_probabilities_neurons)
+                       get_cond_probabilities_neurons,
+                       update_class_totals_probabilities,
+                       update_cond_probabilities_neurons)
 
 def kohonen_offline_global(offline_dataset: np.ndarray, offline_classes: pd.DataFrame, num_it: int,
                            init_n: float, final_n: float, grid_d: int, tr_mode: str, min_ex: int) -> dict:
@@ -161,8 +163,29 @@ def kohonen_online_bayes_nd(mapping: dict, online_dataset: np.ndarray, init_n: f
 
         # Logic for updating the model online (if enabled)
         if update_model_info:
-            # The full update logic would go here
-            pass
+            # 1. Atualiza Totais e Probabilidades das Classes (Incrementa N)
+            # Precisamos passar a predição atual como uma matriz (1, num_classes)
+            pred_row = pred.reshape(1, -1)
+            mapping = update_class_totals_probabilities(mapping, 
+                                                        pred_row, 
+                                                        1, # num_pred (1 exemplo)
+                                                        initial_number_classes, 
+                                                        0, # is_novelty (assumindo 0 por enquanto)
+                                                        num_offline_instances)
+            
+            # 2. Atualiza a Cardinalidade (z) - EQUAÇÃO 10
+            # z_N = ((N-1) * z_{N-1} + |C_i|) / N
+            # O N (total_instances) já foi incrementado na função acima
+            N = mapping['total_instances']
+            z_old = mapping['z']
+            cardinality_current = np.sum(pred) # |C_i| (Quantidade de classes previstas)
+            
+            mapping['z'] = ((N - 1) * z_old + cardinality_current) / N
+            
+            # 3. Atualiza os Thresholds Condicionais dos Neurônios
+            # Como as probabilidades (P(A), P(A|B)) mudaram, recalculamos os limiares
+            mapping['micro_clusters'] = update_cond_probabilities_neurons(mapping['micro_clusters'], 
+                                                                        mapping['class_probabilities'])
 
     # Assemble the final results dictionary
     predictions_matrix = np.array(all_predictions)
