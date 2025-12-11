@@ -111,6 +111,26 @@ def main():
     print(f"  - Macro F-Measure: {evaluation_metrics['ma_fmeasure']:.4f}")
     print(f"  - Macro Precision: {evaluation_metrics['ma_precision']:.4f}")
     print(f"  - Macro Recall: {evaluation_metrics['ma_recall']:.4f}")
+    
+    # Definindo o nome do arquivo baseado no dataset
+    dataset_name = os.path.basename(parameters['test_data']).split('.')[0]
+    results_txt_path = f"Results/{dataset_name}.txt"
+    
+    # Cria o rótulo do algoritmo
+    grid_dim = int(parameters['grid_dimension'])
+    algo_label = f"SOM-AA-{grid_dim}"
+    
+    # Pega a lista de F-Measure por janela que já foi calculada
+    fmeasure_window_values = evaluation_metrics['ma_fmeasure_window']
+    
+    # Formata como string separada por vírgulas
+    values_str = ",".join([f"{x:.8f}" for x in fmeasure_window_values])
+    line_to_write = f"{algo_label},{values_str}\n"
+    
+    with open(results_txt_path, "a", encoding='utf-8') as f:
+        f.write(line_to_write)
+        
+    print(f"Resultados por janela salvos em: {results_txt_path}")
 
     if not os.path.exists('Results'):
         os.makedirs('Results')
