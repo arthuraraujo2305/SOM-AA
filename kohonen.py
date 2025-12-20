@@ -10,7 +10,8 @@ from functions import (compute_initial_class_probabilities_totals,
                        get_average_neuron_outputs,
                        get_cond_probabilities_neurons,
                        update_class_totals_probabilities,
-                       update_cond_probabilities_neurons)
+                       update_cond_probabilities_neurons,
+                       update_model_information)
 
 def kohonen_offline_global(offline_dataset: np.ndarray, offline_classes: pd.DataFrame, num_it: int,
                            init_n: float, final_n: float, grid_d: int, tr_mode: str, min_ex: int) -> dict:
@@ -35,8 +36,11 @@ def kohonen_offline_global(offline_dataset: np.ndarray, offline_classes: pd.Data
                   random_seed=10)
 
     # Initialize weights using Principal Component Analysis for a better starting map.
-    print("Initializing SOM weights with PCA...")
-    som.pca_weights_init(offline_dataset)
+    #print("Initializing SOM weights with PCA...")
+    #som.pca_weights_init(offline_dataset)
+
+    print("Initializing SOM weights randomly (sampling from data)...")
+    som.random_weights_init(offline_dataset)
 
     # Train the SOM using the library's built-in method, which handles decay internally.
     print(f"Starting SOM training for {num_it} iterations...")
@@ -89,105 +93,149 @@ def kohonen_offline_global(offline_dataset: np.ndarray, offline_classes: pd.Data
 def kohonen_online_bayes_nd(mapping: dict, online_dataset: np.ndarray, init_n: float,
                             novel_classes: list, update_model_info: bool,
                             num_offline_instances: int) -> dict:
-    """
-    Performs the online prediction phase using the Bayesian logic from the paper.
-    Includes the fix for the "zero vs. zero" comparison bug.
-    """
+    
     print("\nOnline phase!")
     initial_number_classes = mapping['class_probabilities'].shape[0]
     all_predictions = []
     all_pred_indices = []
     indexes_explained = []
 
+    # --- CORREÇÃO FUNDAMENTAL AQUI ---
+    # Passo 1: Extrair apenas os micro-clusters válidos (filtrados na fase offline)
+    valid_mcs = mapping['micro_clusters']
+    
+    # Se não houver micro-clusters válidos (algo deu muito errado no treino), retornamos vazio
+    if not valid_mcs:
+        print("Erro Crítico: Nenhum micro-cluster válido encontrado.")
+        return {'predictions': pd.DataFrame(), 'indexes_explained': [], 'mapping': mapping}
+
+    # Passo 2: Criar uma matriz apenas com os centróides desses MCs válidos
+    valid_centroids = np.array([mc['centroid'] for mc in valid_mcs])
+    
+    # Passo 3: Configurar o KNN para olhar APENAS para esses centróides
+    # O R usa 'n.k <- ceiling(mapping$z)'. Se for par, soma 1.
+    n_k_search = int(np.ceil(mapping['z']))
+    if n_k_search % 2 == 0: 
+        n_k_search += 1
+    
+    # Garante que não pedimos mais vizinhos do que existem de centróides válidos
+    n_k_search = min(n_k_search, len(valid_centroids))
+    
+    # Treina o KNN apenas com os válidos
+    nbrs = NearestNeighbors(n_neighbors=n_k_search).fit(valid_centroids)
+
     for i, x_instance in enumerate(online_dataset):
         if (i + 1) % 1000 == 0:
             print(f"  Processing instance {i + 1}/{len(online_dataset)}...")
 
         x = x_instance.reshape(1, -1)
-
-        # Determine number of nearest neighbors to find
-        n_k = int(np.ceil(mapping['z']))
-        if n_k % 2 == 0: n_k += 1
-
-        neuron_centroids = mapping['som_map']['codes']
-        if n_k > len(neuron_centroids):
-            n_k = len(neuron_centroids)
-
-        nbrs = NearestNeighbors(n_neighbors=n_k).fit(neuron_centroids)
+        
+        # Busca os vizinhos. 
+        # ATENÇÃO: 'indices' aqui retorna a posição na lista 'valid_centroids', 
+        # não o ID original do neurônio (neuron_id).
         distances, indices = nbrs.kneighbors(x)
 
         pred = np.zeros(initial_number_classes)
+        
+        # Define quantos neurônios vamos consultar (z)
+        z_current = mapping['z']
+        # No R: z <- min(z, length(winner$nn.index))
+        # Aqui garantimos que z não seja maior que o número de vizinhos encontrados
+        z = min(int(np.ceil(z_current)), len(indices[0]))
 
-        # Iterate through the 'z' closest neurons to make predictions
-        z = min(int(np.ceil(mapping['z'])), n_k)
-        for j in range(z):
-            neuron_j_idx = indices[0][j]
-            neuron_j_dist = distances[0][j]
-            mc_j = next((mc for mc in mapping['micro_clusters'] if mc['neuron_id'] == neuron_j_idx), None)
-
-            if mc_j is None: continue
-
+        # Loop pelos vizinhos encontrados (que já são garantidamente válidos)
+        for rank_idx in range(z):
+            # O índice retornado pelo KNN refere-se à lista valid_mcs
+            mc_list_index = indices[0][rank_idx]
+            neuron_j_dist = distances[0][rank_idx]
+            
+            # Recupera o micro-cluster diretamente da lista filtrada
+            mc_j = valid_mcs[mc_list_index]
+            
+            # Como treinamos só com válidos, não precisamos verificar if mc_j is None
+            
             prototype_j = mc_j['prototype_vector']
-            active_classes_in_prototype_j = np.where(prototype_j > 0)[0]
+            active_indices = np.where(prototype_j > 0)[0]
+            
+            # Se o protótipo estiver vazio (sem classes), pulamos (embora MCs validos costumem ter classes)
+            if len(active_indices) == 0: 
+                continue
+            
+            active_weights = prototype_j[active_indices]
+            # Ordena classes pela relevância no protótipo (decrescente)
+            sorted_order = np.argsort(active_weights)[::-1]
+            active_classes_sorted = active_indices[sorted_order]
 
-            # Prediction logic based on cumulative probability
-            for class_idx in active_classes_in_prototype_j:
+            # --- LÓGICA DO VENCEDOR (rank_idx == 0) ---
+            if rank_idx == 0:
+                id_max = active_classes_sorted[0]
+                pred[id_max] = 1
+                
+                # Atualização de estatística (sempre ocorre, conforme R)
+                if 'average_output' in mc_j:
+                     mc_j['average_output'][0] += np.exp(-neuron_j_dist)
+                     mc_j['average_output'][1] += 1
+            
+            # --- LÓGICA DOS VIZINHOS E DEMAIS CLASSES ---
+            for class_idx in active_classes_sorted:
+                # Se já predito como 1, pula
                 if pred[class_idx] == 1: continue
 
                 prob_j_prior = mapping['class_probabilities'][class_idx, class_idx]
                 prob_x_j = np.exp(-neuron_j_dist)
 
-                # Calculate cumulative conditional probability based on already predicted labels
+                # Regra de Bayes considerando o que JÁ foi predito (pred == 1)
                 prob_k_j_cumulative = 1.0
                 predicted_indices = np.where(pred == 1)[0]
+                
                 for pred_idx in predicted_indices:
+                    # P(y_k | y_j) - probabilidade da classe k dado j
                     prob_k_j_cumulative *= mapping['class_probabilities'][pred_idx, class_idx]
 
                 prob_j_ks_x = prob_j_prior * prob_k_j_cumulative * prob_x_j
                 cond_prob_threshold = mc_j['cond_prob_threshold'][class_idx]
 
-                # Fix: Only predict if the calculated probability is greater than zero,
-                # to avoid the "0 >= 0" "bug" that was happening
                 if prob_j_ks_x > 0 and prob_j_ks_x >= cond_prob_threshold:
                     pred[class_idx] = 1
 
-                    # Update average output if model update is enabled
-                    if update_model_info and 'average_output' in mc_j:
+                    # Se ativou classe extra no vencedor ou é vizinho, atualiza estatística
+                    if 'average_output' in mc_j:
                         mc_j['average_output'][0] += np.exp(-neuron_j_dist)
                         mc_j['average_output'][1] += 1
 
-        # Store prediction for this instance
         indexes_explained.append(i)
         all_predictions.append(pred)
         all_pred_indices.append(i)
 
-        # Logic for updating the model online (if enabled)
+        # 1. ATUALIZAÇÃO DE PESOS (Centróides) - Online Learning
         if update_model_info:
-            # 1. Atualiza Totais e Probabilidades das Classes (Incrementa N)
-            # Precisamos passar a predição atual como uma matriz (1, num_classes)
-            pred_row = pred.reshape(1, -1)
-            mapping = update_class_totals_probabilities(mapping, 
-                                                        pred_row, 
-                                                        1, # num_pred (1 exemplo)
-                                                        initial_number_classes, 
-                                                        0, # is_novelty (assumindo 0 por enquanto)
-                                                        num_offline_instances)
-            
-            # 2. Atualiza a Cardinalidade (z) - EQUAÇÃO 10
-            # z_N = ((N-1) * z_{N-1} + |C_i|) / N
-            # O N (total_instances) já foi incrementado na função acima
-            N = mapping['total_instances']
-            z_old = mapping['z']
-            cardinality_current = np.sum(pred) # |C_i| (Quantidade de classes previstas)
-            
-            mapping['z'] = ((N - 1) * z_old + cardinality_current) / N
-            
-            # 3. Atualiza os Thresholds Condicionais dos Neurônios
-            # Como as probabilidades (P(A), P(A|B)) mudaram, recalculamos os limiares
-            mapping['micro_clusters'] = update_cond_probabilities_neurons(mapping['micro_clusters'], 
-                                                                        mapping['class_probabilities'])
+             # Precisamos passar o 'winner_dict' para a função de update.
+             # Como mudamos a lógica do KNN, o 'indices' agora aponta para valid_mcs.
+             # A função update_model_information precisa saber o neuron_id REAL para atualizar o mapa global.
+             
+             # Converte indices da lista filtrada para neuron_ids reais da grid original
+             real_neuron_ids = [valid_mcs[idx]['neuron_id'] for idx in indices[0]]
+             
+             winner_dict = {
+                 'nn_index': [real_neuron_ids], # Lista de listas, pois o código original espera estrutura assim para batch
+                 'nn_dist': distances # Já é lista de listas (1, k)
+             }
+             
+             # Passamos inst_l=0 pois estamos processando instância a instância (batch de 1)
+             mapping = update_model_information(mapping, x, i, init_n, winner_dict, 0)
 
-    # Assemble the final results dictionary
+        # 2. ATUALIZAÇÃO DE ESTATÍSTICAS GLOBAIS (Cardealidade, Totais)
+        pred_row = pred.reshape(1, -1)
+        
+        mapping = update_class_totals_probabilities(mapping, pred_row, 1, initial_number_classes, 0, num_offline_instances)
+        
+        N = mapping['total_instances']
+        z_old = mapping['z']
+        cardinality_current = np.sum(pred)
+        mapping['z'] = ((N - 1) * z_old + cardinality_current) / N
+        
+        mapping['micro_clusters'] = update_cond_probabilities_neurons(mapping['micro_clusters'], mapping['class_probabilities'])
+
     predictions_matrix = np.array(all_predictions)
     final_predictions = pd.DataFrame(np.zeros((len(online_dataset), initial_number_classes)), index=np.arange(len(online_dataset)))
     if len(all_pred_indices) > 0:

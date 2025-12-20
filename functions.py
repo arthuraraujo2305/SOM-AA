@@ -2,6 +2,7 @@ import numpy as np
 import pandas as pd
 from collections import Counter
 from sklearn.neighbors import NearestNeighbors
+import os
 
 
 def euclidean_distance(x: np.ndarray, y: np.ndarray) -> float:
@@ -234,8 +235,16 @@ def update_model_information(mapping: dict, x: np.ndarray, time_stamp: int, n0: 
     return mapping
 
 def macro_precision_recall_fmeasure_windows(true_labels: np.ndarray, predicted_labels: np.ndarray,
-                                            num_evaluation_windows: int) -> dict:
-    """Calculates macro-averaged precision, recall, and F-measure across evaluation windows."""
+                                            num_evaluation_windows: int, dataset_name="debug") -> dict:
+    """
+    Calculates macro-averaged precision, recall, and F-measure across evaluation windows.
+    DEBUG MODE: Saves CSVs for true and predicted labels for each window.
+    """
+    # Cria pasta de debug se não existir
+    debug_dir = f"debug_windows_{dataset_name}"
+    if not os.path.exists(debug_dir):
+        os.makedirs(debug_dir)
+
     num_labels = true_labels.shape[1]
     num_examples = true_labels.shape[0]
     results = {}
@@ -250,10 +259,18 @@ def macro_precision_recall_fmeasure_windows(true_labels: np.ndarray, predicted_l
     start_idx = 0
     beta = 1.0
 
-    for window_size in evaluation_windows:
+    print(f"\n[DEBUG] Salvando CSVs das janelas em: {debug_dir}/")
+
+    for w_idx, window_size in enumerate(evaluation_windows):
         end_idx = start_idx + window_size
+        
+        # Recortes da janela atual
         true_window = true_labels[start_idx:end_idx]
         predicted_window = predicted_labels[start_idx:end_idx]
+
+        # EXPORTAÇÃO PARA DEBUG
+        pd.DataFrame(true_window).to_csv(f"{debug_dir}/window_{w_idx+1}_true.csv", index=False)
+        pd.DataFrame(predicted_window).to_csv(f"{debug_dir}/window_{w_idx+1}_pred.csv", index=False)
 
         total_prec_window, total_recall_window, total_fmeasure_window = 0, 0, 0
 
@@ -262,7 +279,6 @@ def macro_precision_recall_fmeasure_windows(true_labels: np.ndarray, predicted_l
             fp = np.sum((true_window[:, j] == 0) & (predicted_window[:, j] == 1))
             fn = np.sum((true_window[:, j] == 1) & (predicted_window[:, j] == 0))
 
-            # Mulan-inspired edge case handling for precision and recall
             if tp + fp + fn == 0:
                 prec = 1.0; recall = 1.0
             else:
@@ -285,7 +301,6 @@ def macro_precision_recall_fmeasure_windows(true_labels: np.ndarray, predicted_l
 
         start_idx = end_idx
 
-    # Final score is the mean of the scores from each window
     results['ma_precision'] = np.mean(ma_precision_window)
     results['ma_recall'] = np.mean(ma_recall_window)
     results['ma_fmeasure'] = np.mean(ma_fmeasure_window)

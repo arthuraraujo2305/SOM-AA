@@ -45,12 +45,15 @@ def main():
     print(f"Online dataset shape: {online_dataset.shape}")
     print(f"Online classes shape: {online_classes.shape}")
 
-    print("\nStandardizing data...")
-    scaler = StandardScaler()
-    scaler.fit(offline_dataset)
-    offline_dataset_scaled = scaler.transform(offline_dataset)
-    online_dataset_scaled = scaler.transform(online_dataset)
-    print("Data standardized successfully.")
+    #print("\nStandardizing data...")
+    #scaler = StandardScaler()
+    #scaler.fit(offline_dataset)
+    #offline_dataset_scaled = scaler.transform(offline_dataset)
+    #online_dataset_scaled = scaler.transform(online_dataset)
+    #print("Data standardized successfully.")
+
+    offline_dataset_scaled = offline_dataset
+    online_dataset_scaled = online_dataset
 
     print("\nStarting Offline Phase")
 
@@ -100,10 +103,14 @@ def main():
     predicted_classes_explained = predictions.iloc[explained_indices]
 
     num_windows = int(parameters['num_evaluation_windows'])
+
+    dataset_name = os.path.basename(parameters['test_data']).split('.')[0]
+    
     evaluation_metrics = macro_precision_recall_fmeasure_windows(
         true_labels=true_classes_explained.values,
         predicted_labels=predicted_classes_explained.values,
-        num_evaluation_windows=num_windows
+        num_evaluation_windows=num_windows,
+        dataset_name=dataset_name
     )
     online_results['evaluation_metrics'] = evaluation_metrics
 
@@ -112,8 +119,7 @@ def main():
     print(f"  - Macro Precision: {evaluation_metrics['ma_precision']:.4f}")
     print(f"  - Macro Recall: {evaluation_metrics['ma_recall']:.4f}")
     
-    # Definindo o nome do arquivo baseado no dataset
-    dataset_name = os.path.basename(parameters['test_data']).split('.')[0]
+    # Definindo o caminho do arquivo de resultados
     results_txt_path = f"Results/{dataset_name}.txt"
     
     # Cria o rótulo do algoritmo
