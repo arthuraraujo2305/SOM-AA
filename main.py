@@ -60,12 +60,13 @@ def main():
     num_epochs = int(parameters['num_iterations'])
     num_samples = len(offline_dataset_scaled)
     num_iterations_total = num_epochs * num_samples
-    print(f"Training Info: {num_epochs} epochs * {num_samples} samples = {num_iterations_total} total iterations.")
+    #print(f"Training Info: {num_epochs} epochs * {num_samples} samples = {num_iterations_total} total iterations.")
+    print(f"Training Info: Batch Mode selected. Running for {num_epochs} epochs.")
 
     mapping = kohonen_offline_global(
         offline_dataset=offline_dataset_scaled,
         offline_classes=offline_classes,
-        num_it=num_iterations_total,
+        num_it=num_epochs,
         init_n=parameters['n0'],
         final_n=parameters['n1'],
         grid_d=int(parameters['grid_dimension']),

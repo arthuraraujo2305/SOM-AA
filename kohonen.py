@@ -43,8 +43,8 @@ def kohonen_offline_global(offline_dataset: np.ndarray, offline_classes: pd.Data
     som.random_weights_init(offline_dataset)
 
     # Train the SOM using the library's built-in method, which handles decay internally.
-    print(f"Starting SOM training for {num_it} iterations...")
-    som.train(offline_dataset, num_it, verbose=True)
+    print(f"Starting SOM training (BATCH MODE)) for {num_it} epochs...")
+    som.train_batch(offline_dataset, num_it, verbose=True)
     print("SOM training completed.")
 
     # 3. Post-processing: Map data points to neurons and calculate distances
@@ -185,12 +185,11 @@ def kohonen_online_bayes_nd(mapping: dict, online_dataset: np.ndarray, init_n: f
                 prob_x_j = np.exp(-neuron_j_dist)
 
                 # Regra de Bayes considerando o que JÁ foi predito (pred == 1)
-                prob_k_j_cumulative = 1.0
-                predicted_indices = np.where(pred == 1)[0]
+                prob_k_j_cumulative = 1.0  
                 
-                for pred_idx in predicted_indices:
-                    # P(y_k | y_j) - probabilidade da classe k dado j
-                    prob_k_j_cumulative *= mapping['class_probabilities'][pred_idx, class_idx]
+                for k_idx in active_classes_sorted:
+                    if pred[k_idx] == 1 and k_idx != class_idx:
+                        prob_k_j_cumulative *= mapping['class_probabilities'][k_idx, class_idx]
 
                 prob_j_ks_x = prob_j_prior * prob_k_j_cumulative * prob_x_j
                 cond_prob_threshold = mc_j['cond_prob_threshold'][class_idx]

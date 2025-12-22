@@ -109,7 +109,7 @@ def get_average_neuron_outputs(som_map: dict) -> dict:
 
 def get_cond_probabilities_neurons(micro_clusters: list, class_probabilities: np.ndarray,
                                    average_neuron_outputs: dict) -> list:
-    """Calculates the conditional probability thresholds for each class within each neuron (Offline Phase)."""
+    """Calculates the conditional probability thresholds (Offline Phase) - CORRIGIDO V2 (Proteção contra Zero)."""
     for mc in micro_clusters:
         prototype_vector = mc['prototype_vector']
         active_classes_indices = np.where(prototype_vector > 0)[0]
@@ -122,37 +122,39 @@ def get_cond_probabilities_neurons(micro_clusters: list, class_probabilities: np
 
         if avg_output == 0:
             continue
+        
+        # Ordenação por peso (decrescente)
+        active_weights = prototype_vector[active_classes_indices]
+        sorted_idxs = np.argsort(active_weights)[::-1]
+        sorted_classes = active_classes_indices[sorted_idxs]
 
-        for class_idx in active_classes_indices:
+        for i, class_idx in enumerate(sorted_classes):
             prob_j = class_probabilities[class_idx, class_idx]
 
             prob_k_j = 1.0
-            class_prob_row = class_probabilities[class_idx, :].copy()
-            class_prob_row[class_idx] = 0
-
-
-            sorted_indices_ranking = np.argsort(class_prob_row)[::-1]
-
-            for k_idx in active_classes_indices:
-
-                if k_idx < len(sorted_indices_ranking):
-                    ranked_class_id = sorted_indices_ranking[k_idx]
-
-
-                    prob_val = class_probabilities[ranked_class_id, class_idx]
-
-                    if prob_val > 0 and ranked_class_id != class_idx:
-                        prob_k_j *= prob_val
+            
+            # Só multiplica probabilidades RELEVANTES (> 0).
+            # Se a probabilidade for 0, ignoramos (não zeramos o limiar).
+            for k in range(i):
+                higher_ranked_class = sorted_classes[k]
+                prob_val = class_probabilities[higher_ranked_class, class_idx]
+                
+                if prob_val > 0.000001: # Proteção contra zero e underflow
+                    prob_k_j *= prob_val
 
             weight_factor = prototype_vector[class_idx]
+            
+            if prob_j < 0.000001: prob_j = 0.000001
+            
             prob_j_ks_x = prob_j * prob_k_j * avg_output
             threshold = prob_j_ks_x * np.exp(-(1 - weight_factor))
 
             mc['cond_prob_threshold'][class_idx] = threshold
+            
     return micro_clusters
 
 def update_cond_probabilities_neurons(micro_clusters: list, class_probabilities: np.ndarray) -> list:
-    """Updates conditional probability thresholds during the online phase."""
+    """Updates conditional probability thresholds during the online phase - CORRIGIDO V2 (Proteção contra Zero)."""
     for mc in micro_clusters:
         prototype_vector = mc['prototype_vector']
         active_classes_indices = np.where(prototype_vector > 0)[0]
@@ -161,15 +163,27 @@ def update_cond_probabilities_neurons(micro_clusters: list, class_probabilities:
         if avg_output == 0:
             continue
 
-        for class_idx in active_classes_indices:
+        # Ordenação por peso (decrescente)
+        active_weights = prototype_vector[active_classes_indices]
+        sorted_idxs = np.argsort(active_weights)[::-1] 
+        sorted_classes = active_classes_indices[sorted_idxs]
+
+        for i, class_idx in enumerate(sorted_classes):
             prob_j = class_probabilities[class_idx, class_idx]
 
             prob_k_j = 1.0
-            for k_idx in active_classes_indices:
-                if class_idx != k_idx:
-                    prob_k_j *= class_probabilities[k_idx, class_idx]
+            
+            for k in range(i):
+                higher_ranked_class = sorted_classes[k]
+                prob_val = class_probabilities[higher_ranked_class, class_idx]
+                
+                if prob_val > 0.000001: # Proteção contra zero
+                    prob_k_j *= prob_val
 
             weight_factor = prototype_vector[class_idx]
+            
+            if prob_j < 0.000001: prob_j = 0.000001
+            
             prob_j_ks_x = prob_j * prob_k_j * avg_output
             threshold = prob_j_ks_x * np.exp(-(1 - weight_factor))
             mc['cond_prob_threshold'][class_idx] = threshold
