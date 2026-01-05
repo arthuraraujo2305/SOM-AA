@@ -7,6 +7,9 @@ import arff
 import pandas as pd
 from functions import get_parameter_values, macro_precision_recall_fmeasure_windows
 from kohonen import kohonen_offline_global, kohonen_online_bayes_nd
+import matplotlib.pyplot as plt
+import seaborn as sns
+import numpy as np
 
 def load_arff_data(file_path):
     with open(file_path, 'r') as f:
@@ -18,6 +21,52 @@ def load_arff_data(file_path):
     for col in data.columns:
         data[col] = pd.to_numeric(data[col], errors='coerce')
     return data, feature_indices, label_indices
+
+def plot_som_hits(mapping, grid_dimension, dataset_name, base_results_dir="Results"):
+    """
+    Gera um Heatmap da contagem de exemplos por neurônio e salva em Results/NeuronViewer.
+    """
+    # 1. Preparar Diretório
+    viewer_dir = os.path.join(base_results_dir, "NeuronViewer")
+    if not os.path.exists(viewer_dir):
+        os.makedirs(viewer_dir)
+        print(f"[Plot] Diretório criado: {viewer_dir}")
+
+    # 2. Recuperar dados do SOM
+    # No seu código Python, unit_classif está dentro de mapping['som_map']
+    unit_classif = mapping['som_map']['unit.classif']
+    
+    # 3. Construir a matriz de contagem
+    hits_map = np.zeros((grid_dimension, grid_dimension))
+    
+    for neuron_idx in unit_classif:
+        # Conversão de índice linear para (linha, coluna)
+        # Nota: Ajuste se a orientação ficar transposta em relação ao R
+        x = neuron_idx // grid_dimension
+        y = neuron_idx % grid_dimension
+        
+        if x < grid_dimension and y < grid_dimension:
+            hits_map[x, y] += 1
+
+    # 4. Configurar e Salvar o Gráfico
+    plt.figure(figsize=(10, 8))
+    
+    # Heatmap com números inteiros
+    sns.heatmap(hits_map, annot=True, fmt='g', cmap="viridis", 
+                cbar_kws={'label': 'Quantidade de Exemplos'})
+    
+    plt.title(f"SOM Counts - {dataset_name} ({grid_dimension}x{grid_dimension})")
+    plt.xlabel("Dimensão Y")
+    plt.ylabel("Dimensão X")
+    
+    # Nome do arquivo padronizado
+    filename = f"{dataset_name}_counts.png"
+    filepath = os.path.join(viewer_dir, filename)
+    
+    plt.savefig(filepath)
+    plt.close() # Fecha a figura para liberar memória
+    
+    print(f"[Plot] Gráfico de contagem salvo em: {filepath}")
 
 def main():
     parser = argparse.ArgumentParser(description="Run the MLSC Kohonen Map experiment.")
@@ -75,6 +124,12 @@ def main():
     )
     print("Offline Phase Completed")
     print("Model mapping created successfully.")
+
+    dataset_name = os.path.basename(parameters['test_data']).split('.')[0]
+    grid_dim = int(parameters['grid_dimension'])
+    
+    # Chama a função de plotagem (lembre de importar plot_som_hits no topo do main.py)
+    plot_som_hits(mapping, grid_dim, dataset_name)
 
     print("\n--- Starting Online Phase ---")
     init_n = parameters['n0']
