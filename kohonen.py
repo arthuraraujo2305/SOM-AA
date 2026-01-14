@@ -104,7 +104,7 @@ def kohonen_online_bayes_nd(mapping: dict, online_dataset: np.ndarray, init_n: f
     all_pred_indices = []
     indexes_explained = []
 
-    # Passo 1: Extrair apenas os micro-clusters válidos
+    # extrair apenas os micro-clusters válidos
     valid_mcs = mapping['micro_clusters']
     
     if not valid_mcs:
@@ -112,7 +112,7 @@ def kohonen_online_bayes_nd(mapping: dict, online_dataset: np.ndarray, init_n: f
         return {'predictions': pd.DataFrame(), 'indexes_explained': [], 'mapping': mapping}
 
     # Pré-alocação para performance
-    # Vamos manter uma lista de IDs reais para mapear o índice do array de volta para o ID do neurônio
+    # manter uma lista de IDs reais para mapear o índice do array de volta para o ID do neurónio
     valid_neuron_ids = [mc['neuron_id'] for mc in valid_mcs]
 
     for i, x_instance in enumerate(online_dataset):
@@ -121,16 +121,14 @@ def kohonen_online_bayes_nd(mapping: dict, online_dataset: np.ndarray, init_n: f
 
         x = x_instance.reshape(1, -1)
         
-        # DISTÂNCIAS DINÂMICAS
-        # 1. Pegamos os centróides ATUAIS (eles mudam a cada update!)
-        #    Usamos list comprehension pois é rápido o suficiente para ~100 neurônios
+        # pegando os centroides atuais
         current_centroids = np.array([mc['centroid'] for mc in valid_mcs])
         
-        # 2. Calculamos a distância Euclidiana do exemplo x para TODOS os centróides válidos
-        #    axis=1 faz o cálculo por linha (neurônio)
+        # calcula a distância Euclidiana do exemplo x para todos os centróides válidos
+        #    axis=1 faz o cálculo por linha (cada neurónio)
         dists = np.linalg.norm(current_centroids - x, axis=1)
         
-        # 3. Ordenamos pelos menores distâncias (indices do array local)
+        #ordenando pelas menores distâncias
         sorted_idxs = np.argsort(dists)
         
         # O Vencedor é o primeiro da lista ordenada
@@ -138,7 +136,7 @@ def kohonen_online_bayes_nd(mapping: dict, online_dataset: np.ndarray, init_n: f
         winner_dist = dists[winner_idx_local]
         mc_winner = valid_mcs[winner_idx_local]
         
-        # --- VERIFICAÇÃO DO RAIO ---
+        # verificação do raio
         r_factor_1 = mc_winner.get('radius_factor_1', float('inf'))
         
         # Se novel_classes == 0, raio é infinito
@@ -152,14 +150,14 @@ def kohonen_online_bayes_nd(mapping: dict, online_dataset: np.ndarray, init_n: f
         if winner_dist <= r_factor_1:
             is_explained = True
             
-            # --- BLOCO DE PREDIÇÃO
+            # bloco de predição
             pred = np.zeros(initial_number_classes)
             z_current = mapping['z']
-            # Garante que z não é maior que o número de micro-clusters existentes
+            #garantindo que z não é maior que o número de micro-clusters existentes
             z = min(int(np.ceil(z_current)), len(valid_mcs))
 
             for rank_idx in range(z):
-                # Pega o índice do array local baseado no rank
+                #pega o índice do array local baseado no rank
                 mc_idx_local = sorted_idxs[rank_idx]
                 neuron_j_dist = dists[mc_idx_local]
                 mc_j = valid_mcs[mc_idx_local]
@@ -173,7 +171,7 @@ def kohonen_online_bayes_nd(mapping: dict, online_dataset: np.ndarray, init_n: f
                 sorted_order = np.argsort(active_weights)[::-1]
                 active_classes_sorted = active_indices[sorted_order]
 
-                # Lógica do Vencedor (Rank 0)
+                # logica do vencedor
                 if rank_idx == 0:
                     id_max = active_classes_sorted[0]
                     pred[id_max] = 1
@@ -181,7 +179,7 @@ def kohonen_online_bayes_nd(mapping: dict, online_dataset: np.ndarray, init_n: f
                         mc_j['average_output'][0] += np.exp(-neuron_j_dist)
                         mc_j['average_output'][1] += 1
                 
-                # Lógica dos Vizinhos (Bayes)
+                # logica dos vizinhos
                 for class_idx in active_classes_sorted:
                     if pred[class_idx] == 1: continue
 
@@ -206,8 +204,10 @@ def kohonen_online_bayes_nd(mapping: dict, online_dataset: np.ndarray, init_n: f
             all_predictions.append(pred)
             all_pred_indices.append(i)
 
-            # --- ATUALIZAÇÃO DO MODELO (ONLINE LEARNING) ---
+            #atualizacao do modelo
             if update_model_info:
+                # Recupera os IDs reais e distâncias dos z vizinhos mais próximos para update
+                # garante que o update use a vizinhança correta atual
                 neighbor_real_ids = [valid_mcs[idx]['neuron_id'] for idx in sorted_idxs[:z]]
                 neighbor_dists = [dists[idx] for idx in sorted_idxs[:z]]
 
@@ -218,7 +218,7 @@ def kohonen_online_bayes_nd(mapping: dict, online_dataset: np.ndarray, init_n: f
                 
                 mapping = update_model_information(mapping, x, i, init_n, winner_dict, 0)
 
-            # Atualização de Estatísticas Globais
+            # Atualização de estat globais
             pred_row = pred.reshape(1, -1)
             mapping = update_class_totals_probabilities(mapping, pred_row, 1, initial_number_classes, 0, num_offline_instances)
             

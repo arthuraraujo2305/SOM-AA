@@ -149,6 +149,35 @@ def main():
     )
 
     print("Online Phase Completed")
+
+    # Verificando matrizes
+    print("\n[DEBUG] Exportando matrizes preditas e reais para conferência...")
+    
+    # Salvando em Results e depois em Debug_Matrices
+    debug_dir = os.path.join("Results", "Debug_Matrices")
+    if not os.path.exists(debug_dir):
+        os.makedirs(debug_dir)
+    
+    dataset_name = os.path.basename(parameters['test_data']).split('.')[0]
+    
+    # prreparando a Matriz Real
+    real_matrix_df = online_classes.astype(int)
+    
+    #preparando a Matriz Predita
+    # online_results['predictions'] já vem do kohonen.py
+    pred_matrix_df = online_results['predictions'].astype(int)
+    
+    #salvando os arquivos
+    real_path = os.path.join(debug_dir, f"{dataset_name}_real.txt")
+    pred_path = os.path.join(debug_dir, f"{dataset_name}_pred.txt")
+    
+    np.savetxt(real_path, real_matrix_df.values, fmt='%d', delimiter=' ')
+    np.savetxt(pred_path, pred_matrix_df.values, fmt='%d', delimiter=' ')
+    
+    print(f"Matriz REAL salva em: {real_path}")
+    print(f"Matriz PREDITA salva em: {pred_path}")
+
+
     if 'indexes_explained' in online_results:
         print(f"{len(online_results['indexes_explained'])} instances were explained by the model.")
 
