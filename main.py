@@ -94,15 +94,15 @@ def main():
     print(f"Online dataset shape: {online_dataset.shape}")
     print(f"Online classes shape: {online_classes.shape}")
 
-    #print("\nStandardizing data...")
-    #scaler = StandardScaler()
-    #scaler.fit(offline_dataset)
-    #offline_dataset_scaled = scaler.transform(offline_dataset)
-    #online_dataset_scaled = scaler.transform(online_dataset)
-    #print("Data standardized successfully.")
+    print("\nStandardizing data...")
+    scaler = StandardScaler()
+    scaler.fit(offline_dataset)
+    offline_dataset_scaled = scaler.transform(offline_dataset)
+    online_dataset_scaled = scaler.transform(online_dataset)
+    print("Data standardized successfully.")
 
-    offline_dataset_scaled = offline_dataset
-    online_dataset_scaled = online_dataset
+    #offline_dataset_scaled = offline_dataset
+    #online_dataset_scaled = online_dataset
 
     print("\nStarting Offline Phase")
 

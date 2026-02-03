@@ -98,6 +98,17 @@ def kohonen_online_bayes_nd(mapping: dict, online_dataset: np.ndarray, init_n: f
                             novel_classes: list, update_model_info: bool,
                             num_offline_instances: int) -> dict:
     
+    # --- ADICIONE ESTE BLOCO AQUI ---
+    print("\n[DEBUG INÉRCIA] Verificando totais antes da Fase Online:")
+    print(f"Total Instances (Denominador Global): {mapping.get('total_instances', 'NÃO ENCONTRADO')}")
+    if 'class_totals' in mapping:
+        print(f"Soma da Matriz class_totals: {np.sum(mapping['class_totals'])}")
+        print(f"Exemplo class_totals[0,0]: {mapping['class_totals'][0,0]}")
+    else:
+        print("Matriz class_totals NÃO ENCONTRADA no mapping!")
+    # --------------------------------
+    
+    
     print("\nOnline phase (Dynamic Distances + Radius Check)!")
     initial_number_classes = mapping['class_probabilities'].shape[0]
     all_predictions = []
@@ -179,6 +190,8 @@ def kohonen_online_bayes_nd(mapping: dict, online_dataset: np.ndarray, init_n: f
                         mc_j['average_output'][0] += np.exp(-neuron_j_dist)
                         mc_j['average_output'][1] += 1
                 
+                # Printando apenas na iteração 20.000 para não poluir o terminal
+                debug_mode = (i == 20000)
                 # logica dos vizinhos
                 for class_idx in active_classes_sorted:
                     if pred[class_idx] == 1: continue
@@ -193,6 +206,13 @@ def kohonen_online_bayes_nd(mapping: dict, online_dataset: np.ndarray, init_n: f
 
                     prob_j_ks_x = prob_j_prior * prob_k_j_cumulative * prob_x_j
                     cond_prob_threshold = mc_j['cond_prob_threshold'][class_idx]
+
+                    if debug_mode:
+                        print(f"\n--- [DEBUG ORIENTADOR] Instância {i} | Classe Candidata {class_idx} ---")
+                        print(f"Eq 6 (Prob Bayesiana): {prob_j_ks_x:.10f}")
+                        print(f"   -> Prior: {prob_j_prior:.4f} | Cumulative: {prob_k_j_cumulative:.4f} | Exp(-dist): {prob_x_j:.4f}")
+                        print(f"Eq 7 (Threshold):      {cond_prob_threshold:.10f}")
+                        print(f"DECISÃO: {'[CLASSIFICA]' if prob_j_ks_x >= cond_prob_threshold else '[REJEITA]'}")
 
                     if prob_j_ks_x > 0 and prob_j_ks_x >= cond_prob_threshold:
                         pred[class_idx] = 1
