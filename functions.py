@@ -235,12 +235,6 @@ def update_model_information(mapping: dict, x: np.ndarray, time_stamp: int, n0: 
         distance = distances[i]
         micro_cluster['num_instances'] += 1
         
-        # --- SOLUÇÃO FINAL: RETIRAR O FREIO DE MÃO ---
-        # A normalização já reduz o termo exp(-distância).
-        # Não precisamos decair o n0 agressivamente, senão o modelo para de aprender o Drift.
-        
-        # Usamos n0 fixo (como no R) ou um decaimento ultra-lento apenas por segurança.
-        # Vamos usar o valor puro vindo do parâmetro (0.05).
         learning_rate = n0 
         
         delta = learning_rate * (x - micro_cluster['centroid']) * np.exp(-distance)
@@ -278,7 +272,11 @@ def macro_precision_recall_fmeasure_windows(true_labels: np.ndarray, predicted_l
     start_idx = 0
     beta = 1.0
 
-    print(f"\n[DEBUG] Salvando CSVs das janelas em: {debug_dir}/")
+    print(f"\n[DEBUG] Calculando métricas de forma ACUMULATIVA (igual ao R)...")
+
+    tp_cum = np.zeros(num_labels)
+    fp_cum = np.zeros(num_labels)
+    fn_cum = np.zeros(num_labels)
 
     for w_idx, window_size in enumerate(evaluation_windows):
         end_idx = start_idx + window_size
@@ -289,9 +287,13 @@ def macro_precision_recall_fmeasure_windows(true_labels: np.ndarray, predicted_l
         total_prec_window, total_recall_window, total_fmeasure_window = 0, 0, 0
 
         for j in range(num_labels):
-            tp = np.sum((true_window[:, j] == 1) & (predicted_window[:, j] == 1))
-            fp = np.sum((true_window[:, j] == 0) & (predicted_window[:, j] == 1))
-            fn = np.sum((true_window[:, j] == 1) & (predicted_window[:, j] == 0))
+            tp_cum[j] += np.sum((true_window[:, j] == 1) & (predicted_window[:, j] == 1))
+            fp_cum[j] += np.sum((true_window[:, j] == 0) & (predicted_window[:, j] == 1))
+            fn_cum[j] += np.sum((true_window[:, j] == 1) & (predicted_window[:, j] == 0))
+            
+            tp = tp_cum[j]
+            fp = fp_cum[j]
+            fn = fn_cum[j]
 
             if tp + fp + fn == 0:
                 prec = 1.0; recall = 1.0; fmeasure = 1.0 
@@ -320,10 +322,11 @@ def macro_precision_recall_fmeasure_windows(true_labels: np.ndarray, predicted_l
         ma_fmeasure_window.append(total_fmeasure_window / num_labels if num_labels > 0 else 0)
 
         start_idx = end_idx
-
-    results['ma_precision'] = np.mean(ma_precision_window)
-    results['ma_recall'] = np.mean(ma_recall_window)
-    results['ma_fmeasure'] = np.mean(ma_fmeasure_window)
+ 
+    results['ma_precision'] = ma_precision_window[-1]
+    results['ma_recall'] = ma_recall_window[-1]
+    results['ma_fmeasure'] = ma_fmeasure_window[-1]
+    
     results['ma_precision_window'] = ma_precision_window
     results['ma_recall_window'] = ma_recall_window
     results['ma_fmeasure_window'] = ma_fmeasure_window
