@@ -145,7 +145,9 @@ def main():
         init_n=init_n,
         novel_classes=novel_classes,
         update_model_info=update_model_info,
-        num_offline_instances=num_offline_instances
+        num_offline_instances=num_offline_instances,
+        theta=parameters['theta'],
+        min_ex=parameters['min_examples_cluster']
     )
 
     print("Online Phase Completed")

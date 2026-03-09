@@ -12,7 +12,8 @@ from functions import (compute_initial_class_probabilities_totals,
                        update_class_totals_probabilities,
                        update_cond_probabilities_neurons,
                        update_model_information,
-                       compute_radius_factor_mc)
+                       compute_radius_factor_mc,
+                       run_novelty_detection)
 
 def kohonen_offline_global(offline_dataset: np.ndarray, offline_classes: pd.DataFrame, num_it: int,
                            init_n: float, final_n: float, grid_d: int, tr_mode: str, min_ex: int) -> dict:
@@ -96,9 +97,9 @@ def kohonen_offline_global(offline_dataset: np.ndarray, offline_classes: pd.Data
 
 def kohonen_online_bayes_nd(mapping: dict, online_dataset: np.ndarray, init_n: float,
                             novel_classes: list, update_model_info: bool,
-                            num_offline_instances: int) -> dict:
+                            num_offline_instances: int,
+                            theta: float, min_ex: int) -> dict:
     
-    # --- ADICIONE ESTE BLOCO AQUI ---
     print("\n[DEBUG INÉRCIA] Verificando totais antes da Fase Online:")
     print(f"Total Instances (Denominador Global): {mapping.get('total_instances', 'NÃO ENCONTRADO')}")
     if 'class_totals' in mapping:
@@ -106,7 +107,6 @@ def kohonen_online_bayes_nd(mapping: dict, online_dataset: np.ndarray, init_n: f
         print(f"Exemplo class_totals[0,0]: {mapping['class_totals'][0,0]}")
     else:
         print("Matriz class_totals NÃO ENCONTRADA no mapping!")
-    # --------------------------------
     
     
     print("\nOnline phase (Dynamic Distances + Radius Check)!")
@@ -114,6 +114,7 @@ def kohonen_online_bayes_nd(mapping: dict, online_dataset: np.ndarray, init_n: f
     all_predictions = []
     all_pred_indices = []
     indexes_explained = []
+    
 
     # extrair apenas os micro-clusters válidos
     valid_mcs = mapping['micro_clusters']
@@ -121,6 +122,10 @@ def kohonen_online_bayes_nd(mapping: dict, online_dataset: np.ndarray, init_n: f
     if not valid_mcs:
         print("Erro Crítico: Nenhum micro-cluster válido encontrado.")
         return {'predictions': pd.DataFrame(), 'indexes_explained': [], 'mapping': mapping}
+
+    # --- NOVO: Inicializando a Memória de Curto Prazo ---
+    short_term_memory = []
+    stm_indices = []
 
     # Pré-alocação para performance
     # manter uma lista de IDs reais para mapear o índice do array de volta para o ID do neurónio
@@ -150,11 +155,15 @@ def kohonen_online_bayes_nd(mapping: dict, online_dataset: np.ndarray, init_n: f
         # verificação do raio
         r_factor_1 = mc_winner.get('radius_factor_1', float('inf'))
         
+        #Comentando isso para poder detectar novidade
+        '''
         # Se novel_classes == 0, raio é infinito
         if isinstance(novel_classes, list) and len(novel_classes) > 0 and novel_classes[0] == 0:
             r_factor_1 = float('inf')
         elif isinstance(novel_classes, (int, float)) and novel_classes == 0:
             r_factor_1 = float('inf')
+
+        '''
 
         is_explained = False
         
@@ -247,6 +256,49 @@ def kohonen_online_bayes_nd(mapping: dict, online_dataset: np.ndarray, init_n: f
             cardinality_current = np.sum(pred)
             mapping['z'] = ((N - 1) * z_old + cardinality_current) / N
             mapping['micro_clusters'] = update_cond_probabilities_neurons(mapping['micro_clusters'], mapping['class_probabilities'])
+
+        else:
+            # O modelo não reconhece! Envia para a memória de curto prazo
+            short_term_memory.append(x_instance)
+            stm_indices.append(i)
+            
+            # Predição vazia (desconhecido)
+            pred = np.zeros(initial_number_classes)
+            all_predictions.append(pred)
+            all_pred_indices.append(i)
+            
+            # Verifica se a memória encheu (atingiu o theta)
+            if len(short_term_memory) >= theta:
+                mapping, short_term_memory, stm_indices, new_patterns = run_novelty_detection(
+                    mapping, short_term_memory, stm_indices, min_ex
+                )
+                if new_patterns:
+                    # Se não existir a chave NP no mapping, cria
+                    if 'NP_count' not in mapping:
+                        mapping['NP_count'] = 0
+                        
+                    for pattern in new_patterns:
+                        mapping['NP_count'] += 1
+                        np_id = mapping['NP_count']
+                        print(f"   [+] Transformando em Novelty Pattern: NP_{np_id}")
+                        
+                        # Expande as predições de TODAS as instâncias anteriores para acomodar a nova classe NP
+                        # Adiciona um zero no final de cada predição feita até agora
+                        for idx_pred in range(len(all_predictions)):
+                            all_predictions[idx_pred] = np.append(all_predictions[idx_pred], 0.0)
+                        
+                        # Atualiza a predição das instâncias que formaram este cluster
+                        # (Retroativamente dizendo que elas pertencem ao NP recém-criado)
+                        for original_idx in pattern['indices']:
+                            # Localiza onde essa predição está na lista all_predictions
+                            try:
+                                list_idx = all_pred_indices.index(original_idx)
+                                all_predictions[list_idx][-1] = 1.0 # Marca 1 na última coluna (a do novo NP)
+                            except ValueError:
+                                pass
+                        
+                        # Atualiza a contagem global de classes para as próximas instâncias do loop
+                        initial_number_classes += 1
 
     predictions_matrix = np.array(all_predictions)
     final_predictions = pd.DataFrame(np.zeros((len(online_dataset), initial_number_classes)), index=np.arange(len(online_dataset)))

@@ -2,6 +2,8 @@ import numpy as np
 import pandas as pd
 from collections import Counter
 from sklearn.neighbors import NearestNeighbors
+from sklearn.cluster import KMeans
+from sklearn.metrics import silhouette_samples
 import os
 
 def euclidean_distance(x: np.ndarray, y: np.ndarray) -> float:
@@ -365,3 +367,46 @@ def compute_radius_factor_mc(micro_clusters: list, som_map: dict, data: np.ndarr
         mc['radius_factor_2'] = nd_rfact if nd_rfact < r_fact else r_fact
 
     return micro_clusters
+
+def run_novelty_detection(mapping: dict, short_term_memory: list, stm_indices: list, min_ex: int) -> tuple:
+    """Executa o procedimento de Detecção de Novidades (ND) do MINAS-BR e retorna os novos padrões."""
+    
+    if len(short_term_memory) < min_ex:
+        return mapping, short_term_memory, stm_indices, []
+
+    stm_data = np.array(short_term_memory)
+    
+    # K-Means: definindo k dinamicamente
+    k = max(2, len(stm_data) // 10)
+    
+    kmeans = KMeans(n_clusters=k, random_state=42, n_init='auto')
+    cluster_labels = kmeans.fit_predict(stm_data)
+    
+    try:
+        sample_silhouettes = silhouette_samples(stm_data, cluster_labels)
+    except:
+        sample_silhouettes = np.zeros(len(stm_data))
+
+    valid_clusters = []
+    new_patterns_info = [] # NOVO: Lista para guardar as informações dos NPs
+    
+    for cluster_id in range(k):
+        idx_in_cluster = np.where(cluster_labels == cluster_id)[0]
+        
+        if len(idx_in_cluster) >= min_ex:
+            cluster_silhouette = np.mean(sample_silhouettes[idx_in_cluster])
+            if cluster_silhouette > 0:
+                valid_clusters.append((cluster_id, cluster_silhouette, len(idx_in_cluster)))
+                
+                # NOVO: Calcula o centroide e guarda os índices originais das instâncias
+                centroid = np.mean(stm_data[idx_in_cluster], axis=0)
+                original_indices = [stm_indices[i] for i in idx_in_cluster]
+                new_patterns_info.append({
+                    'centroid': centroid,
+                    'indices': original_indices,
+                    'silhouette': cluster_silhouette
+                })
+    
+    # Limpa a memória após processar (no MINAS-BR original, os não-agrupados continuam, 
+    # mas limpar tudo é uma simplificação aceitável para esta etapa).
+    return mapping, [], [], new_patterns_info
