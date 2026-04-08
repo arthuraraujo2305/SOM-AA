@@ -4,6 +4,7 @@ from collections import Counter
 from sklearn.neighbors import NearestNeighbors
 from sklearn.cluster import KMeans
 from sklearn.metrics import silhouette_samples
+from minisom import MiniSom
 import os
 
 def euclidean_distance(x: np.ndarray, y: np.ndarray) -> float:
@@ -117,22 +118,17 @@ def get_cond_probabilities_neurons(micro_clusters: list, class_probabilities: np
             continue
             
         for class_idx in active_classes_indices:
-            class_prob_row = class_probabilities[class_idx, :].copy()
-            class_prob_row[class_idx] = 0 
-            
-            prob_sorted_indices = np.argsort(class_prob_row)[::-1]
-            
             prob_j = class_probabilities[class_idx, class_idx]
             prob_k_j = 1.0
 
             multiplied_values = []
 
-            for k in active_classes_indices:
-                idx_k = prob_sorted_indices[k]
-                val = class_probabilities[idx_k, class_idx]
-                if val > 0 and idx_k != class_idx:
-                    prob_k_j *= val
-                    multiplied_values.append(val)
+            for idx_k in active_classes_indices:
+                if idx_k != class_idx:
+                    val = class_probabilities[idx_k, class_idx]
+                    if val > 0:
+                        prob_k_j *= val
+                        multiplied_values.append(val)
             
             weight_factor = prototype_vector[class_idx]
             if prob_j < 1e-9: prob_j = 1e-9
@@ -146,7 +142,7 @@ def get_cond_probabilities_neurons(micro_clusters: list, class_probabilities: np
             # --- DEBUG (Primeiro caso válido) ---
             if not debug_printed and len(multiplied_values) > 0:
                 print("\n" + "="*50)
-                print(f"[DEBUG ORIENTADOR] Analisando Neurônio {neuron_id}, Classe {class_idx}")
+                print(f"[DEBUG] Analisando Neurônio {neuron_id}, Classe {class_idx}")
                 print(f"1. Prob Prior (p(cj)): {prob_j:.10f}")
                 print(f"2. Multiplicação Condicional (prod p(cl|ck)): {prob_k_j:.20f}")
                 print(f"   -> Valores multiplicados: {multiplied_values}")
@@ -169,16 +165,11 @@ def update_cond_probabilities_neurons(micro_clusters: list, class_probabilities:
             continue
 
         for class_idx in active_classes_indices:
-            class_prob_row = class_probabilities[class_idx, :].copy()
-            class_prob_row[class_idx] = 0
-            
-            prob_sorted_indices = np.argsort(class_prob_row)[::-1]
             prob_j = class_probabilities[class_idx, class_idx]
             prob_k_j = 1.0
 
-            for k in active_classes_indices:
-                idx_k = prob_sorted_indices[k]
-                if class_probabilities[idx_k, class_idx] > 0 and idx_k != class_idx:
+            for idx_k in active_classes_indices:
+                if idx_k != class_idx and class_probabilities[idx_k, class_idx] > 0:
                     prob_k_j *= class_probabilities[idx_k, class_idx]
 
             weight_factor = prototype_vector[class_idx]
@@ -250,7 +241,9 @@ def update_model_information(mapping: dict, x: np.ndarray, time_stamp: int, n0: 
            print(f"Magnitude do Delta: {np.linalg.norm(delta):.10f}")
         
         micro_cluster['centroid'] += delta
-        mapping['som_map']['codes'][neuron_idx] += delta
+
+        if isinstance(neuron_idx, (int, np.integer)):
+            mapping['som_map']['codes'][neuron_idx] += delta
 
     return mapping
 
@@ -336,6 +329,14 @@ def macro_precision_recall_fmeasure_windows(true_labels: np.ndarray, predicted_l
     return results
 
 def compute_radius_factor_mc(micro_clusters: list, som_map: dict, data: np.ndarray) -> list:
+    """
+    Calcula o raio de cada micro-cluster de forma fiel ao CF-Vector / CluStream:
+        R = sqrt( (1/N) * sum ||x_i - c||^2 )
+    e define a fronteira máxima como:
+        radius_factor_1 = 2 * R
+
+    Para clusters com apenas 1 ponto, usa 0 temporariamente.
+    """
     unit_classif = som_map['unit.classif']
 
     for mc in micro_clusters:
@@ -345,68 +346,221 @@ def compute_radius_factor_mc(micro_clusters: list, som_map: dict, data: np.ndarr
         data_mapped = data[indexes_mapped]
 
         if len(data_mapped) <= 1:
-            mc['radius_factor_1'] = 0
-            mc['radius_factor_2'] = 0
+            mc['radius'] = 0.0
+            mc['radius_factor_1'] = 0.0
             continue
 
-        distances_from_centroid = np.linalg.norm(data_mapped - centroid, axis=1)
-        r_fact = np.max(distances_from_centroid)
+        # ||x_i - c||^2 para cada ponto do micro-cluster
+        sq_dists = np.sum((data_mapped - centroid) ** 2, axis=1)
 
-        nd_rfact = r_fact 
-        
-        try:
-             nbrs = NearestNeighbors(n_neighbors=min(2, len(data_mapped))).fit(data_mapped)
-             distances_knn, indices_knn = nbrs.kneighbors(data_mapped)
-             if distances_knn.shape[1] > 1:
-                 max_dist = np.max(distances_knn[:, 1])
-                 nd_rfact = max_dist 
-        except:
-             pass
+        # RMS deviation ao centróide
+        radius = np.sqrt(np.mean(sq_dists))
 
-        mc['radius_factor_1'] = r_fact
-        mc['radius_factor_2'] = nd_rfact if nd_rfact < r_fact else r_fact
+        mc['radius'] = radius
+        mc['radius_factor_1'] = 2.0 * radius
 
     return micro_clusters
 
+
+def build_candidate_mc_from_stm(stm_data: np.ndarray, winner_indices: list, centroid: np.ndarray) -> dict:
+    """
+    Cria um micro-cluster candidato a partir de um grupo encontrado na STM.
+    """
+    group_data = stm_data[winner_indices]
+
+    if len(group_data) == 0:
+        return None
+
+    sq_dists = np.sum((group_data - centroid) ** 2, axis=1)
+    radius = np.sqrt(np.mean(sq_dists)) if len(group_data) > 0 else 0.0
+
+    candidate = {
+        'centroid': centroid.copy(),
+        'num_instances': len(group_data),
+        'radius': radius,
+        'radius_factor_1': 2.0 * radius,
+        'group_data': group_data,
+        'prototype_vector': None,
+        'cond_prob_threshold': None,
+        'average_output': [0.0, 0],
+    }
+    return candidate
+
+def decide_extension_or_novelty(candidate_mc: dict, mapping: dict) -> dict:
+    valid_mcs = mapping['micro_clusters']
+    if not valid_mcs:
+        return {'type': 'NP', 'closest_mc': None, 'extensions': []}
+
+    distances = []
+    for mc in valid_mcs:
+        d = np.linalg.norm(candidate_mc['centroid'] - mc['centroid'])
+        distances.append((d, mc))
+
+    distances.sort(key=lambda x: x[0])
+    closest_dist, closest_mc = distances[0]
+
+    extensions = []
+    for d, mc in distances:
+        boundary = mc.get('radius', 0.0)
+        if d <= boundary:
+            extensions.append(mc)
+
+    if len(extensions) > 0:
+        return {
+            'type': 'extension',
+            'closest_mc': closest_mc,
+            'extensions': extensions,
+            'distance': closest_dist
+        }
+
+    return {
+        'type': 'NP',
+        'closest_mc': closest_mc,
+        'extensions': [],
+        'distance': closest_dist
+    }
+
+def expand_model_for_new_class(mapping: dict) -> tuple:
+    old_n = mapping['class_probabilities'].shape[0]
+    new_n = old_n + 1
+
+    new_probs = np.zeros((new_n, new_n))
+    new_totals = np.zeros((new_n, new_n))
+
+    new_probs[:old_n, :old_n] = mapping['class_probabilities']
+    new_totals[:old_n, :old_n] = mapping['class_totals']
+
+    mapping['class_probabilities'] = new_probs
+    mapping['class_totals'] = new_totals
+
+    for mc in mapping['micro_clusters']:
+        mc['prototype_vector'] = np.append(mc['prototype_vector'], 0.0)
+        mc['cond_prob_threshold'] = np.append(mc['cond_prob_threshold'], 0.0)
+
+    return mapping, old_n
+
+def add_novel_micro_cluster(mapping: dict, candidate_mc: dict, np_class_idx: int, np_count: int) -> dict:
+    """
+    Cria um novo micro-cluster no modelo representando um NP.
+    """
+    num_classes = mapping['class_probabilities'].shape[0]
+
+    prototype_vector = np.zeros(num_classes)
+    prototype_vector[np_class_idx] = 1.0
+
+    new_mc = {
+        'neuron_id': f'NP_{np_count}',
+        'centroid': candidate_mc['centroid'].copy(),
+        'num_instances': candidate_mc['num_instances'],
+        'prototype_vector': prototype_vector,
+        'cond_prob_threshold': np.zeros(num_classes),
+        'average_output': [0.0, 0],
+        'radius': candidate_mc['radius'],
+        'radius_factor_1': candidate_mc['radius_factor_1'],
+    }
+
+    mapping['micro_clusters'].append(new_mc)
+    return mapping
+
+def absorb_candidate_as_extension(mapping: dict, candidate_mc: dict, target_mc: dict) -> dict:
+    """
+    Atualiza um micro-cluster existente com o candidato vindo da STM.
+    """
+    n_old = target_mc['num_instances']
+    n_new = candidate_mc['num_instances']
+    total_n = n_old + n_new
+
+    if total_n == 0:
+        return mapping
+
+    # média ponderada dos centróides
+    target_mc['centroid'] = ((n_old * target_mc['centroid']) + (n_new * candidate_mc['centroid'])) / total_n
+    target_mc['num_instances'] = total_n
+
+    # atualiza raio de forma conservadora
+    target_mc['radius'] = max(target_mc.get('radius', 0.0), candidate_mc.get('radius', 0.0))
+    target_mc['radius_factor_1'] = 2.0 * target_mc['radius']
+
+    return mapping
+
 def run_novelty_detection(mapping: dict, short_term_memory: list, stm_indices: list, min_ex: int) -> tuple:
-    """Executa o procedimento de Detecção de Novidades (ND) do MINAS-BR e retorna os novos padrões."""
-    
+    """
+    Roda um SOM na STM, gera grupos candidatos e decide:
+      - extensão
+      - ou Novelty Pattern (NP)
+
+    Retorna:
+      mapping atualizado,
+      STM restante,
+      índices restantes da STM,
+      e lista de eventos detectados.
+    """
     if len(short_term_memory) < min_ex:
         return mapping, short_term_memory, stm_indices, []
 
     stm_data = np.array(short_term_memory)
-    
-    # K-Means: definindo k dinamicamente
-    k = max(2, len(stm_data) // 10)
-    
-    kmeans = KMeans(n_clusters=k, random_state=42, n_init='auto')
-    cluster_labels = kmeans.fit_predict(stm_data)
-    
-    try:
-        sample_silhouettes = silhouette_samples(stm_data, cluster_labels)
-    except:
-        sample_silhouettes = np.zeros(len(stm_data))
+    grid_size = 3
 
-    valid_clusters = []
-    new_patterns_info = [] # NOVO: Lista para guardar as informações dos NPs
-    
-    for cluster_id in range(k):
-        idx_in_cluster = np.where(cluster_labels == cluster_id)[0]
-        
-        if len(idx_in_cluster) >= min_ex:
-            cluster_silhouette = np.mean(sample_silhouettes[idx_in_cluster])
-            if cluster_silhouette > 0:
-                valid_clusters.append((cluster_id, cluster_silhouette, len(idx_in_cluster)))
-                
-                # NOVO: Calcula o centroide e guarda os índices originais das instâncias
-                centroid = np.mean(stm_data[idx_in_cluster], axis=0)
-                original_indices = [stm_indices[i] for i in idx_in_cluster]
-                new_patterns_info.append({
-                    'centroid': centroid,
-                    'indices': original_indices,
-                    'silhouette': cluster_silhouette
-                })
-    
-    # Limpa a memória após processar (no MINAS-BR original, os não-agrupados continuam, 
-    # mas limpar tudo é uma simplificação aceitável para esta etapa).
-    return mapping, [], [], new_patterns_info
+    tmp_som = MiniSom(grid_size, grid_size, stm_data.shape[1], sigma=1.0, learning_rate=0.5, random_seed=10)
+    tmp_som.random_weights_init(stm_data)
+    tmp_som.train_batch(stm_data, 200, verbose=False)
+
+    weights = tmp_som.get_weights().reshape(-1, stm_data.shape[1])
+
+    detected_events = []
+    used_local_indices = set()
+
+    if 'NP_count' not in mapping:
+        mapping['NP_count'] = 0
+
+    for neuron_idx in range(len(weights)):
+        winners = [
+            i for i, x in enumerate(stm_data)
+            if np.ravel_multi_index(tmp_som.winner(x), (grid_size, grid_size)) == neuron_idx
+        ]
+
+        if len(winners) < min_ex:
+            continue
+
+        centroid = weights[neuron_idx]
+        candidate_mc = build_candidate_mc_from_stm(stm_data, winners, centroid)
+        if candidate_mc is None:
+            continue
+
+        decision = decide_extension_or_novelty(candidate_mc, mapping)
+
+        original_indices = [stm_indices[i] for i in winners]
+
+        if decision['type'] == 'extension':
+            target_mc = decision['closest_mc']
+            mapping = absorb_candidate_as_extension(mapping, candidate_mc, target_mc)
+
+            detected_events.append({
+                'type': 'extension',
+                'indices': original_indices,
+                'target_mc': target_mc['neuron_id'],
+                'centroid': centroid.copy()
+            })
+
+        else:
+            mapping, new_class_idx = expand_model_for_new_class(mapping)
+            mapping['NP_count'] += 1
+            np_id = mapping['NP_count']
+
+            mapping = add_novel_micro_cluster(mapping, candidate_mc, new_class_idx, np_id)
+
+            detected_events.append({
+                'type': 'NP',
+                'indices': original_indices,
+                'np_class_idx': new_class_idx,
+                'np_id': np_id,
+                'centroid': centroid.copy(),
+                'extensions': [mc['neuron_id'] for mc in decision['extensions']]
+            })
+
+        used_local_indices.update(winners)
+
+    new_stm = [x for i, x in enumerate(short_term_memory) if i not in used_local_indices]
+    new_stm_indices = [idx for i, idx in enumerate(stm_indices) if i not in used_local_indices]
+
+    return mapping, new_stm, new_stm_indices, detected_events

@@ -139,6 +139,8 @@ def main():
     update_model_info = bool(parameters['update_model_info'])
     num_offline_instances = len(offline_dataset)
 
+    window_stm_check = int(parameters.get('window_stm_check', 100))
+
     online_results = kohonen_online_bayes_nd(
         mapping=mapping,
         online_dataset=online_dataset_scaled,
@@ -147,7 +149,8 @@ def main():
         update_model_info=update_model_info,
         num_offline_instances=num_offline_instances,
         theta=parameters['theta'],
-        min_ex=parameters['min_examples_cluster']
+        min_ex=parameters['min_examples_cluster'],
+        window_stm_check=window_stm_check
     )
 
     print("Online Phase Completed")

@@ -98,7 +98,7 @@ def kohonen_offline_global(offline_dataset: np.ndarray, offline_classes: pd.Data
 def kohonen_online_bayes_nd(mapping: dict, online_dataset: np.ndarray, init_n: float,
                             novel_classes: list, update_model_info: bool,
                             num_offline_instances: int,
-                            theta: float, min_ex: int) -> dict:
+                            theta: float, min_ex: int, window_stm_check: int) -> dict:
     
     print("\n[DEBUG INÉRCIA] Verificando totais antes da Fase Online:")
     print(f"Total Instances (Denominador Global): {mapping.get('total_instances', 'NÃO ENCONTRADO')}")
@@ -114,6 +114,8 @@ def kohonen_online_bayes_nd(mapping: dict, online_dataset: np.ndarray, init_n: f
     all_predictions = []
     all_pred_indices = []
     indexes_explained = []
+    num_extensions_detected = 0
+    num_nps_detected = 0
     
 
     # extrair apenas os micro-clusters válidos
@@ -135,9 +137,12 @@ def kohonen_online_bayes_nd(mapping: dict, online_dataset: np.ndarray, init_n: f
         if (i + 1) % 1000 == 0:
             print(f"  Processing instance {i + 1}/{len(online_dataset)}...")
 
+        valid_mcs = mapping['micro_clusters']
+        if not valid_mcs:
+            print("Erro Crítico: Nenhum micro-cluster válido encontrado durante a fase online.")
+            break
+
         x = x_instance.reshape(1, -1)
-        
-        # pegando os centroides atuais
         current_centroids = np.array([mc['centroid'] for mc in valid_mcs])
         
         # calcula a distância Euclidiana do exemplo x para todos os centróides válidos
@@ -217,7 +222,7 @@ def kohonen_online_bayes_nd(mapping: dict, online_dataset: np.ndarray, init_n: f
                     cond_prob_threshold = mc_j['cond_prob_threshold'][class_idx]
 
                     if debug_mode:
-                        print(f"\n--- [DEBUG ORIENTADOR] Instância {i} | Classe Candidata {class_idx} ---")
+                        print(f"\n--- [DEBUG] Instância {i} | Classe Candidata {class_idx} ---")
                         print(f"Eq 6 (Prob Bayesiana): {prob_j_ks_x:.10f}")
                         print(f"   -> Prior: {prob_j_prior:.4f} | Cumulative: {prob_k_j_cumulative:.4f} | Exp(-dist): {prob_x_j:.4f}")
                         print(f"Eq 7 (Threshold):      {cond_prob_threshold:.10f}")
@@ -267,38 +272,95 @@ def kohonen_online_bayes_nd(mapping: dict, online_dataset: np.ndarray, init_n: f
             all_predictions.append(pred)
             all_pred_indices.append(i)
             
-            # Verifica se a memória encheu (atingiu o theta)
-            if len(short_term_memory) >= theta:
-                mapping, short_term_memory, stm_indices, new_patterns = run_novelty_detection(
+            if (i + 1) % window_stm_check == 0 and len(short_term_memory) >= min_ex:
+                mapping, short_term_memory, stm_indices, detected_events = run_novelty_detection(
                     mapping, short_term_memory, stm_indices, min_ex
                 )
-                if new_patterns:
-                    # Se não existir a chave NP no mapping, cria
-                    if 'NP_count' not in mapping:
-                        mapping['NP_count'] = 0
-                        
-                    for pattern in new_patterns:
-                        mapping['NP_count'] += 1
-                        np_id = mapping['NP_count']
-                        print(f"   [+] Transformando em Novelty Pattern: NP_{np_id}")
-                        
-                        # Expande as predições de TODAS as instâncias anteriores para acomodar a nova classe NP
-                        # Adiciona um zero no final de cada predição feita até agora
-                        for idx_pred in range(len(all_predictions)):
-                            all_predictions[idx_pred] = np.append(all_predictions[idx_pred], 0.0)
-                        
-                        # Atualiza a predição das instâncias que formaram este cluster
-                        # (Retroativamente dizendo que elas pertencem ao NP recém-criado)
-                        for original_idx in pattern['indices']:
-                            # Localiza onde essa predição está na lista all_predictions
+
+                for event in detected_events:
+                    if event['type'] == 'extension':
+                        num_extensions_detected += 1
+                        print(f"   [EXT] Grupo da STM absorvido como extensão de {event['target_mc']}")
+
+                        closest_mc = next(mc for mc in mapping['micro_clusters'] if mc['neuron_id'] == event['target_mc'])
+                        pred_ext = np.zeros(initial_number_classes)
+
+                        active_labels = np.where(closest_mc['prototype_vector'] > 0.5)[0]
+                        pred_ext[active_labels] = 1.0
+
+                        for original_idx in event['indices']:
                             try:
                                 list_idx = all_pred_indices.index(original_idx)
-                                all_predictions[list_idx][-1] = 1.0 # Marca 1 na última coluna (a do novo NP)
+                                all_predictions[list_idx] = pred_ext.copy()
+
+                                if original_idx not in indexes_explained:
+                                    indexes_explained.append(original_idx)
+
+                                pred_row = pred_ext.reshape(1, -1)
+                                mapping = update_class_totals_probabilities(
+                                    mapping, pred_row, 1, initial_number_classes, 0, num_offline_instances
+                                )
+
+                                N = mapping['total_instances']
+                                z_old = mapping['z']
+                                cardinality_current = np.sum(pred_ext)
+                                mapping['z'] = ((N - 1) * z_old + cardinality_current) / N
+
                             except ValueError:
                                 pass
-                        
-                        # Atualiza a contagem global de classes para as próximas instâncias do loop
+
+                        mapping['micro_clusters'] = update_cond_probabilities_neurons(
+                            mapping['micro_clusters'],
+                            mapping['class_probabilities']
+                        )
+
+                    elif event['type'] == 'NP':
+                        num_nps_detected += 1
+                        np_id = event['np_id']
+                        np_class_idx = event['np_class_idx']
+
+                        print(f"   [+] Transformando em Novelty Pattern: NP_{np_id}")
+
+                        # expande predições anteriores para nova classe
+                        for idx_pred in range(len(all_predictions)):
+                            all_predictions[idx_pred] = np.append(all_predictions[idx_pred], 0.0)
+
                         initial_number_classes += 1
+
+                        for original_idx in event['indices']:
+                            try:
+                                list_idx = all_pred_indices.index(original_idx)
+
+                                pred_np = np.zeros(initial_number_classes)
+                                pred_np[np_class_idx] = 1.0
+
+                                # se houver extensões associadas, reaproveita rótulos conhecidos
+                                if event.get('extensions'):
+                                    for ext_id in event['extensions']:
+                                        ext_mc = next((mc for mc in mapping['micro_clusters'] if mc['neuron_id'] == ext_id), None)
+                                        if ext_mc is not None:
+                                            known_labels = np.where(ext_mc['prototype_vector'] > 0.5)[0]
+                                            pred_np[known_labels] = 1.0
+
+                                all_predictions[list_idx] = pred_np
+
+                                pred_row = pred_np.reshape(1, -1)
+                                mapping = update_class_totals_probabilities(
+                                    mapping, pred_row, 1, initial_number_classes, 1, num_offline_instances
+                                )
+
+                                N = mapping['total_instances']
+                                z_old = mapping['z']
+                                cardinality_current = np.sum(pred_np)
+                                mapping['z'] = ((N - 1) * z_old + cardinality_current) / N
+
+                            except ValueError:
+                                pass
+
+                        mapping['micro_clusters'] = update_cond_probabilities_neurons(
+                            mapping['micro_clusters'],
+                            mapping['class_probabilities']
+                        )
 
     predictions_matrix = np.array(all_predictions)
     final_predictions = pd.DataFrame(np.zeros((len(online_dataset), initial_number_classes)), index=np.arange(len(online_dataset)))
@@ -306,6 +368,11 @@ def kohonen_online_bayes_nd(mapping: dict, online_dataset: np.ndarray, init_n: f
     if len(all_pred_indices) > 0:
         final_predictions.iloc[all_pred_indices] = predictions_matrix
 
+    print("\n[RESUMO ND]")
+    print(f"Extensões detectadas: {num_extensions_detected}")
+    print(f"NPs detectados: {num_nps_detected}")
+    print(f"Número final de classes no modelo: {initial_number_classes}")
+    
     results = {
         'predictions': final_predictions,
         'indexes_explained': indexes_explained,
