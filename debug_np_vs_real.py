@@ -8,12 +8,13 @@ true_labels = np.loadtxt(real_path, dtype=int)
 pred = np.loadtxt(pred_path, dtype=int)
 
 num_known = 5
+num_real_classes = true_labels.shape[1]
 
 print(f"Shape true_labels: {true_labels.shape}")
 print(f"Shape pred: {pred.shape}")
 print()
 
-for np_col in range(num_known, pred.shape[1]):
+for np_col in range(num_real_classes, pred.shape[1]):
     print(f"===== NP coluna {np_col} =====")
     for real_col in range(num_known, true_labels.shape[1]):
         a = np.sum((pred[:, np_col] == 1) & (true_labels[:, real_col] == 1))

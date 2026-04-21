@@ -4,29 +4,27 @@ from minisom import MiniSom
 from collections import Counter
 from sklearn.neighbors import NearestNeighbors
 
-from functions import (compute_initial_class_probabilities_totals,
-                       compute_label_cardinality,
-                       compute_micro_clusters,
-                       get_average_neuron_outputs,
-                       get_cond_probabilities_neurons,
-                       update_class_totals_probabilities,
-                       update_cond_probabilities_neurons,
-                       update_model_information,
-                       compute_radius_factor_mc,
-                       run_novelty_detection)
+from functions import (
+    compute_initial_class_probabilities_totals,
+    compute_label_cardinality,
+    compute_micro_clusters,
+    get_average_neuron_outputs,
+    get_cond_probabilities_neurons,
+    update_class_totals_probabilities,
+    update_cond_probabilities_neurons,
+    update_model_information,
+    compute_radius_factor_mc,
+    run_novelty_detection,
+    forget_obsolete_information,
+)
 
 def kohonen_offline_global(offline_dataset: np.ndarray, offline_classes: pd.DataFrame, num_it: int,
                            init_n: float, final_n: float, grid_d: int, tr_mode: str, min_ex: int) -> dict:
-    """
-    Performs the offline training phase using MiniSom's built-in training method.
-    """
     print("\nOffline phase - building maps!")
 
-    # 1. Initial Calculations
     class_probabilities, class_totals = compute_initial_class_probabilities_totals(offline_classes)
     z = compute_label_cardinality(offline_classes)
 
-    # 2. Initialize and Train the SOM
     num_features = offline_dataset.shape[1]
     np.random.seed(10)
     initial_sigma = grid_d / 2.0
@@ -37,22 +35,17 @@ def kohonen_offline_global(offline_dataset: np.ndarray, offline_classes: pd.Data
                   neighborhood_function='gaussian',
                   random_seed=10)
 
-    # Initialize weights using Principal Component Analysis for a better starting map.
-    #print("Initializing SOM weights with PCA...")
-    #som.pca_weights_init(offline_dataset)
-
     print("Initializing SOM weights randomly (sampling from data)...")
     som.random_weights_init(offline_dataset)
 
-    # Train the SOM using the library's built-in method, which handles decay internally.
     print(f"Starting SOM training (BATCH MODE)) for {num_it} epochs...")
     som.train_batch(offline_dataset, num_it, verbose=True)
     print("SOM training completed.")
 
-    # 3. Post-processing: Map data points to neurons and calculate distances
     unit_classif = np.zeros(len(offline_dataset), dtype=int)
     distances = np.zeros(len(offline_dataset), dtype=float)
-    weights = som.get_weights() # Cache weights for efficiency
+    weights = som.get_weights()
+
     for i, x in enumerate(offline_dataset):
         winner_pos = som.winner(x)
         winner_idx = np.ravel_multi_index(winner_pos, (grid_d, grid_d))
@@ -65,17 +58,16 @@ def kohonen_offline_global(offline_dataset: np.ndarray, offline_classes: pd.Data
         'distances': distances
     }
 
-    # 4. Compute Micro-Cluster properties
     result_mc = compute_micro_clusters(som_map, offline_classes, min_ex)
     average_output_som_map = get_average_neuron_outputs(result_mc['som_map'])
-    micro_clusters = get_cond_probabilities_neurons(result_mc['micro_clusters'],
-                                                    class_probabilities,
-                                                    average_output_som_map)
+    micro_clusters = get_cond_probabilities_neurons(
+        result_mc['micro_clusters'],
+        class_probabilities,
+        average_output_som_map
+    )
 
-    # Compute radius factor for each neuron
-    micro_clusters = compute_radius_factor_mc(micro_clusters, result_mc['som_map'], offline_dataset)                                               
+    micro_clusters = compute_radius_factor_mc(micro_clusters, result_mc['som_map'], offline_dataset)
 
-    # 5. Assemble the final results dictionary
     result = {
         'som_map': result_mc['som_map'],
         'micro_clusters': micro_clusters,
@@ -83,7 +75,6 @@ def kohonen_offline_global(offline_dataset: np.ndarray, offline_classes: pd.Data
         'class_probabilities': class_probabilities,
         'class_totals': class_totals,
         'total_instances': len(offline_dataset),
-        # Placeholders for novelty detection features
         'NP': 0,
         'total_instances_np': [],
         'novel_patterns_time_stamp': []
@@ -99,7 +90,7 @@ def kohonen_online_bayes_nd(mapping: dict, online_dataset: np.ndarray, init_n: f
                             novel_classes: list, update_model_info: bool,
                             num_offline_instances: int,
                             theta: float, min_ex: int, window_stm_check: int) -> dict:
-    
+
     print("\n[DEBUG INÉRCIA] Verificando totais antes da Fase Online:")
     print(f"Total Instances (Denominador Global): {mapping.get('total_instances', 'NÃO ENCONTRADO')}")
     if 'class_totals' in mapping:
@@ -107,31 +98,24 @@ def kohonen_online_bayes_nd(mapping: dict, online_dataset: np.ndarray, init_n: f
         print(f"Exemplo class_totals[0,0]: {mapping['class_totals'][0,0]}")
     else:
         print("Matriz class_totals NÃO ENCONTRADA no mapping!")
-    
-    
+
     print("\nOnline phase (Dynamic Distances + Radius Check)!")
+
     initial_number_classes = mapping['class_probabilities'].shape[0]
     all_predictions = []
     all_pred_indices = []
     indexes_explained = []
     num_extensions_detected = 0
     num_nps_detected = 0
-    
+    window_predictions = []
 
-    # extrair apenas os micro-clusters válidos
     valid_mcs = mapping['micro_clusters']
-    
     if not valid_mcs:
         print("Erro Crítico: Nenhum micro-cluster válido encontrado.")
         return {'predictions': pd.DataFrame(), 'indexes_explained': [], 'mapping': mapping}
 
-    # --- NOVO: Inicializando a Memória de Curto Prazo ---
     short_term_memory = []
     stm_indices = []
-
-    # Pré-alocação para performance
-    # manter uma lista de IDs reais para mapear o índice do array de volta para o ID do neurónio
-    valid_neuron_ids = [mc['neuron_id'] for mc in valid_mcs]
 
     for i, x_instance in enumerate(online_dataset):
         if (i + 1) % 1000 == 0:
@@ -144,75 +128,52 @@ def kohonen_online_bayes_nd(mapping: dict, online_dataset: np.ndarray, init_n: f
 
         x = x_instance.reshape(1, -1)
         current_centroids = np.array([mc['centroid'] for mc in valid_mcs])
-        
-        # calcula a distância Euclidiana do exemplo x para todos os centróides válidos
-        #    axis=1 faz o cálculo por linha (cada neurónio)
+
         dists = np.linalg.norm(current_centroids - x, axis=1)
-        
-        #ordenando pelas menores distâncias
         sorted_idxs = np.argsort(dists)
-        
-        # O Vencedor é o primeiro da lista ordenada
+
         winner_idx_local = sorted_idxs[0]
         winner_dist = dists[winner_idx_local]
         mc_winner = valid_mcs[winner_idx_local]
-        
-        # verificação do raio
+
         r_factor_1 = mc_winner.get('radius_factor_1', float('inf'))
-        
-        #Comentando isso para poder detectar novidade
-        '''
-        # Se novel_classes == 0, raio é infinito
-        if isinstance(novel_classes, list) and len(novel_classes) > 0 and novel_classes[0] == 0:
-            r_factor_1 = float('inf')
-        elif isinstance(novel_classes, (int, float)) and novel_classes == 0:
-            r_factor_1 = float('inf')
 
-        '''
-
-        is_explained = False
-        
         if winner_dist <= r_factor_1:
-            is_explained = True
-            
-            # bloco de predição
             pred = np.zeros(initial_number_classes)
             z_current = mapping['z']
-            #garantindo que z não é maior que o número de micro-clusters existentes
             z = min(int(np.ceil(z_current)), len(valid_mcs))
 
             for rank_idx in range(z):
-                #pega o índice do array local baseado no rank
                 mc_idx_local = sorted_idxs[rank_idx]
                 neuron_j_dist = dists[mc_idx_local]
                 mc_j = valid_mcs[mc_idx_local]
-                
+
                 prototype_j = mc_j['prototype_vector']
                 active_indices = np.where(prototype_j > 0)[0]
-                
-                if len(active_indices) == 0: continue
-                
+
+                if len(active_indices) == 0:
+                    continue
+
                 active_weights = prototype_j[active_indices]
                 sorted_order = np.argsort(active_weights)[::-1]
                 active_classes_sorted = active_indices[sorted_order]
 
-                # logica do vencedor
                 if rank_idx == 0:
                     id_max = active_classes_sorted[0]
                     pred[id_max] = 1
                     if 'average_output' in mc_j:
                         mc_j['average_output'][0] += np.exp(-neuron_j_dist)
                         mc_j['average_output'][1] += 1
-                
-                # Printando apenas na iteração 20.000 para não poluir o terminal
+                    mc_j['last_timestamp'] = i
+
                 debug_mode = (i == 20000)
-                # logica dos vizinhos
                 for class_idx in active_classes_sorted:
-                    if pred[class_idx] == 1: continue
+                    if pred[class_idx] == 1:
+                        continue
 
                     prob_j_prior = mapping['class_probabilities'][class_idx, class_idx]
                     prob_x_j = np.exp(-neuron_j_dist)
-                    
+
                     prob_k_j_cumulative = 1.0
                     for k_idx in active_classes_sorted:
                         if pred[k_idx] == 1 and k_idx != class_idx:
@@ -233,15 +194,14 @@ def kohonen_online_bayes_nd(mapping: dict, online_dataset: np.ndarray, init_n: f
                         if 'average_output' in mc_j:
                             mc_j['average_output'][0] += np.exp(-neuron_j_dist)
                             mc_j['average_output'][1] += 1
+                        mc_j['last_timestamp'] = i
 
             indexes_explained.append(i)
             all_predictions.append(pred)
             all_pred_indices.append(i)
+            window_predictions.append(pred.copy())
 
-            #atualizacao do modelo
             if update_model_info:
-                # Recupera os IDs reais e distâncias dos z vizinhos mais próximos para update
-                # garante que o update use a vizinhança correta atual
                 neighbor_real_ids = [valid_mcs[idx]['neuron_id'] for idx in sorted_idxs[:z]]
                 neighbor_dists = [dists[idx] for idx in sorted_idxs[:z]]
 
@@ -249,32 +209,24 @@ def kohonen_online_bayes_nd(mapping: dict, online_dataset: np.ndarray, init_n: f
                     'nn_index': [neighbor_real_ids],
                     'nn_dist': [neighbor_dists]
                 }
-                
+
                 mapping = update_model_information(mapping, x, i, init_n, winner_dict, 0)
 
-            # Atualização de estat globais
             pred_row = pred.reshape(1, -1)
             mapping = update_class_totals_probabilities(mapping, pred_row, 1, initial_number_classes, 0, num_offline_instances)
-            
-            N = mapping['total_instances']
-            z_old = mapping['z']
-            cardinality_current = np.sum(pred)
-            mapping['z'] = ((N - 1) * z_old + cardinality_current) / N
             mapping['micro_clusters'] = update_cond_probabilities_neurons(mapping['micro_clusters'], mapping['class_probabilities'])
 
         else:
-            # O modelo não reconhece! Envia para a memória de curto prazo
             short_term_memory.append(x_instance)
             stm_indices.append(i)
-            
-            # Predição vazia (desconhecido)
+
             pred = np.zeros(initial_number_classes)
             all_predictions.append(pred)
             all_pred_indices.append(i)
-            
+
             if (i + 1) % window_stm_check == 0 and len(short_term_memory) >= min_ex:
                 mapping, short_term_memory, stm_indices, detected_events = run_novelty_detection(
-                    mapping, short_term_memory, stm_indices, min_ex
+                    mapping, short_term_memory, stm_indices, min_ex, i
                 )
 
                 for event in detected_events:
@@ -300,18 +252,13 @@ def kohonen_online_bayes_nd(mapping: dict, online_dataset: np.ndarray, init_n: f
                                 mapping = update_class_totals_probabilities(
                                     mapping, pred_row, 1, initial_number_classes, 0, num_offline_instances
                                 )
-
-                                N = mapping['total_instances']
-                                z_old = mapping['z']
-                                cardinality_current = np.sum(pred_ext)
-                                mapping['z'] = ((N - 1) * z_old + cardinality_current) / N
+                                window_predictions.append(pred_ext.copy())
 
                             except ValueError:
                                 pass
 
                         mapping['micro_clusters'] = update_cond_probabilities_neurons(
-                            mapping['micro_clusters'],
-                            mapping['class_probabilities']
+                            mapping['micro_clusters'], mapping['class_probabilities']
                         )
 
                     elif event['type'] == 'NP':
@@ -321,9 +268,11 @@ def kohonen_online_bayes_nd(mapping: dict, online_dataset: np.ndarray, init_n: f
 
                         print(f"   [+] Transformando em Novelty Pattern: NP_{np_id}")
 
-                        # expande predições anteriores para nova classe
                         for idx_pred in range(len(all_predictions)):
                             all_predictions[idx_pred] = np.append(all_predictions[idx_pred], 0.0)
+
+                        for idx_pred in range(len(window_predictions)):
+                            window_predictions[idx_pred] = np.append(window_predictions[idx_pred], 0.0)
 
                         initial_number_classes += 1
 
@@ -334,7 +283,6 @@ def kohonen_online_bayes_nd(mapping: dict, online_dataset: np.ndarray, init_n: f
                                 pred_np = np.zeros(initial_number_classes)
                                 pred_np[np_class_idx] = 1.0
 
-                                # se houver extensões associadas, reaproveita rótulos conhecidos
                                 if event.get('extensions'):
                                     for ext_id in event['extensions']:
                                         ext_mc = next((mc for mc in mapping['micro_clusters'] if mc['neuron_id'] == ext_id), None)
@@ -348,23 +296,44 @@ def kohonen_online_bayes_nd(mapping: dict, online_dataset: np.ndarray, init_n: f
                                 mapping = update_class_totals_probabilities(
                                     mapping, pred_row, 1, initial_number_classes, 1, num_offline_instances
                                 )
-
-                                N = mapping['total_instances']
-                                z_old = mapping['z']
-                                cardinality_current = np.sum(pred_np)
-                                mapping['z'] = ((N - 1) * z_old + cardinality_current) / N
+                                window_predictions.append(pred_np.copy())
 
                             except ValueError:
                                 pass
 
                         mapping['micro_clusters'] = update_cond_probabilities_neurons(
-                            mapping['micro_clusters'],
-                            mapping['class_probabilities']
+                            mapping['micro_clusters'], mapping['class_probabilities']
                         )
 
+        if (i + 1) % window_stm_check == 0:
+            if len(window_predictions) > 0:
+                padded_window_predictions = []
+
+                for pred_vec in window_predictions:
+                    pred_vec = np.asarray(pred_vec, dtype=float)
+
+                    if len(pred_vec) < initial_number_classes:
+                        pad_size = initial_number_classes - len(pred_vec)
+                        pred_vec = np.append(pred_vec, np.zeros(pad_size))
+                    elif len(pred_vec) > initial_number_classes:
+                        pred_vec = pred_vec[:initial_number_classes]
+
+                    padded_window_predictions.append(pred_vec)
+
+                window_pred_arr = np.vstack(padded_window_predictions)
+                mapping['z'] = np.mean(np.sum(window_pred_arr, axis=1))
+                window_predictions = []
+
+            mapping, short_term_memory, stm_indices = forget_obsolete_information(
+                mapping, short_term_memory, stm_indices, i, window_stm_check
+            )
+
     predictions_matrix = np.array(all_predictions)
-    final_predictions = pd.DataFrame(np.zeros((len(online_dataset), initial_number_classes)), index=np.arange(len(online_dataset)))
-    
+    final_predictions = pd.DataFrame(
+        np.zeros((len(online_dataset), initial_number_classes)),
+        index=np.arange(len(online_dataset))
+    )
+
     if len(all_pred_indices) > 0:
         final_predictions.iloc[all_pred_indices] = predictions_matrix
 
@@ -372,7 +341,7 @@ def kohonen_online_bayes_nd(mapping: dict, online_dataset: np.ndarray, init_n: f
     print(f"Extensões detectadas: {num_extensions_detected}")
     print(f"NPs detectados: {num_nps_detected}")
     print(f"Número final de classes no modelo: {initial_number_classes}")
-    
+
     results = {
         'predictions': final_predictions,
         'indexes_explained': indexes_explained,
@@ -381,10 +350,6 @@ def kohonen_online_bayes_nd(mapping: dict, online_dataset: np.ndarray, init_n: f
     return results
 
 def kohonen_online_baseline_predictor(mapping: dict, online_dataset: np.ndarray) -> dict:
-    """
-    A simple baseline predictor used for debugging and analysis.
-    Predicts based on a simple threshold on the winning neuron's prototype vector.
-    """
     print("\n!!! RUNNING ONLINE PHASE WITH SIMPLE BASELINE PREDICTOR !!!")
     initial_number_classes = mapping['class_probabilities'].shape[0]
     all_predictions = []
@@ -393,9 +358,9 @@ def kohonen_online_baseline_predictor(mapping: dict, online_dataset: np.ndarray)
     for i, x_instance in enumerate(online_dataset):
         if (i + 1) % 1000 == 0:
             print(f"  Processing instance {i + 1}/{len(online_dataset)}...")
+
         x = x_instance.reshape(1, -1)
 
-        # Find the single winning neuron
         nbrs = NearestNeighbors(n_neighbors=1).fit(neuron_centroids)
         distances, indices = nbrs.kneighbors(x)
         winner_idx = indices[0][0]
@@ -405,7 +370,7 @@ def kohonen_online_baseline_predictor(mapping: dict, online_dataset: np.ndarray)
         pred = np.zeros(initial_number_classes)
         if mc_winner:
             prototype = mc_winner['prototype_vector']
-            pred[prototype > 0.5] = 1 # Simple prediction rule
+            pred[prototype > 0.5] = 1
 
         all_predictions.append(pred)
 
