@@ -43,6 +43,15 @@ def compute_initial_class_probabilities_totals(offline_classes: pd.DataFrame) ->
 
     return class_probabilities, class_totals
 
+
+def _ensure_total_instances_np(mapping: dict, num_novel_classes: int) -> list:
+    total_instances_np = mapping.setdefault('total_instances_np', [])
+
+    if len(total_instances_np) < num_novel_classes:
+        total_instances_np.extend([0] * (num_novel_classes - len(total_instances_np)))
+
+    return total_instances_np
+
 def get_parameter_values(param_file: str) -> dict:
     parameters = {}
     with open(param_file, 'r', encoding='utf-8') as f:
@@ -63,16 +72,21 @@ def get_parameter_values(param_file: str) -> dict:
 
 def compute_micro_clusters(som_map: dict, offline_classes: pd.DataFrame, min_ex: int) -> dict:
     neuron_counts = Counter(som_map['unit.classif'])
-    valid_neurons = sorted([neuron for neuron, count in neuron_counts.items() if count >= min_ex])
+    valid_neuron_indices = sorted([idx for idx, count in neuron_counts.items() if count >= min_ex])
     micro_clusters = []
 
-    for neuron_id in valid_neurons:
-        indexes = np.where(som_map['unit.classif'] == neuron_id)[0]
+    node_positions = som_map.get('node_positions', [])
+
+    for idx in valid_neuron_indices:
+        indexes = np.where(som_map['unit.classif'] == idx)[0]
         prototype_vector = offline_classes.iloc[indexes].mean(axis=0).values
+
+        # Usa a posição topológica (x,y) como ID se disponível, senão usa o índice
+        neuron_id = node_positions[idx] if node_positions else idx
 
         micro_cluster_dict = {
             'neuron_id': neuron_id,
-            'centroid': som_map['codes'][neuron_id].copy(),
+            'centroid': som_map['codes'][idx].copy(),
             'num_instances': len(indexes),
             'prototype_vector': prototype_vector,
             'cond_prob_threshold': np.zeros(offline_classes.shape[1]),
@@ -81,6 +95,7 @@ def compute_micro_clusters(som_map: dict, offline_classes: pd.DataFrame, min_ex:
             'radius': 0.0,
             'radius_factor_1': 0.0,
             'std_dev': 0.0,
+            'gsom_idx': idx # Referência para o array 'codes'
         }
         micro_clusters.append(micro_cluster_dict)
 
@@ -109,8 +124,11 @@ def get_cond_probabilities_neurons(micro_clusters: list, class_probabilities: np
         prototype_vector = mc['prototype_vector']
         active_classes_indices = np.where(prototype_vector > 0)[0]
         neuron_id = mc['neuron_id']
+        
+        # AQUI ESTÁ A CORREÇÃO: Pega o índice inteiro para buscar no dicionário de médias
+        idx_busca = mc.get('gsom_idx', neuron_id)
 
-        sum_outputs, count_outputs = average_neuron_outputs.get(neuron_id, [0.0, 0])
+        sum_outputs, count_outputs = average_neuron_outputs.get(idx_busca, [0.0, 0])
         avg_output = sum_outputs / count_outputs if count_outputs > 0 else 0.0
 
         mc['average_output'] = [sum_outputs, count_outputs]
@@ -186,6 +204,14 @@ def update_class_totals_probabilities(mapping: dict, pred: np.ndarray, num_pred:
                                       num_offline_instances: int) -> dict:
     mapping['total_instances'] += num_pred
 
+    num_total_classes = mapping['class_totals'].shape[0]
+    num_novel_classes = max(0, num_total_classes - initial_number_classes)
+    total_instances_np = _ensure_total_instances_np(mapping, num_novel_classes)
+
+    if is_novelty == 0 and total_instances_np:
+        for i in range(len(total_instances_np)):
+            total_instances_np[i] += num_pred
+
     if pred.shape[0] > 0:
         for r in range(pred.shape[0]):
             predicted_indices = np.where(pred[r, :] > 0)[0]
@@ -194,15 +220,29 @@ def update_class_totals_probabilities(mapping: dict, pred: np.ndarray, num_pred:
                     for idx_j in predicted_indices:
                         mapping['class_totals'][idx_i, idx_j] += 1
 
-    num_total_classes = mapping['class_totals'].shape[0]
+                if is_novelty == 1:
+                    for idx_i in predicted_indices:
+                        if idx_i >= initial_number_classes:
+                            np_idx = idx_i - initial_number_classes
+                            if np_idx < len(total_instances_np):
+                                total_instances_np[np_idx] += num_pred
+
     for idx_i in range(num_total_classes):
         for idx_j in range(num_total_classes):
             total_j = mapping['class_totals'][idx_j, idx_j]
 
             if idx_i == idx_j:
+                if idx_i >= initial_number_classes:
+                    np_idx = idx_j - initial_number_classes
+                    denominator = total_instances_np[np_idx] if np_idx < len(total_instances_np) else 0
+                    if denominator <= 0:
+                        denominator = mapping['total_instances']
+                else:
+                    denominator = mapping['total_instances']
+
                 mapping['class_probabilities'][idx_i, idx_j] = (
-                    mapping['class_totals'][idx_i, idx_j] / mapping['total_instances']
-                    if mapping['total_instances'] > 0 else 0.0
+                    mapping['class_totals'][idx_i, idx_j] / denominator
+                    if denominator > 0 else 0.0
                 )
             else:
                 mapping['class_probabilities'][idx_i, idx_j] = (
@@ -214,12 +254,12 @@ def update_class_totals_probabilities(mapping: dict, pred: np.ndarray, num_pred:
 
 def update_model_information(mapping: dict, x: np.ndarray, time_stamp: int, n0: float,
                              winner: dict, inst_l: int) -> dict:
-    neuron_indices = winner['nn_index'][inst_l]
+    neuron_ids = winner['nn_index'][inst_l]
     distances = winner['nn_dist'][inst_l]
     x = x.flatten()
 
-    for i, neuron_idx in enumerate(neuron_indices):
-        micro_cluster = next((mc for mc in mapping['micro_clusters'] if mc['neuron_id'] == neuron_idx), None)
+    for i, neuron_id in enumerate(neuron_ids):
+        micro_cluster = next((mc for mc in mapping['micro_clusters'] if mc['neuron_id'] == neuron_id), None)
         if micro_cluster is None:
             continue
 
@@ -230,17 +270,17 @@ def update_model_information(mapping: dict, x: np.ndarray, time_stamp: int, n0: 
         learning_rate = n0
         delta = learning_rate * (x - micro_cluster['centroid']) * np.exp(-distance)
 
-        if time_stamp == 20000:
-            print(f"\n--- [DEBUG FINAL] Atualização de Peso ---")
-            print(f"Learning Rate (Fixo): {learning_rate}")
-            print(f"Distância Normalizada: {distance:.4f}")
-            print(f"Exp(-dist) [Amortecimento Natural]: {np.exp(-distance):.4f}")
-            print(f"Magnitude do Delta: {np.linalg.norm(delta):.10f}")
-
         micro_cluster['centroid'] += delta
 
-        if isinstance(neuron_idx, (int, np.integer)):
-            mapping['som_map']['codes'][neuron_idx] += delta
+        # Atualiza a matriz de códigos global baseada no índice armazenado
+        if 'gsom_idx' in micro_cluster:
+            idx = micro_cluster['gsom_idx']
+            mapping['som_map']['codes'][idx] += delta
+            
+            # Reflete a mudança no modelo global G-SOM
+            if 'gsom_model' in mapping:
+                node_pos = mapping['som_map']['node_positions'][idx]
+                mapping['gsom_model'].nodes[node_pos] += delta
 
     return mapping
 
@@ -329,18 +369,13 @@ def macro_precision_recall_fmeasure_windows(true_labels: np.ndarray, predicted_l
     return results
 
 def compute_radius_factor_mc(micro_clusters: list, som_map: dict, data: np.ndarray) -> list:
-    """
-    Raio geométrico compatível com a ideia do CF-Vector/CluStream:
-    R = sqrt( (1/N) * sum ||x_i - c||^2 )
-    fronteira máxima online = 2 * R
-    Além disso, guarda std_dev das distâncias ao centróide para uso na ND.
-    """
     unit_classif = som_map['unit.classif']
 
     for mc in micro_clusters:
-        neuron_id = mc['neuron_id']
+        idx_busca = mc.get('gsom_idx', mc['neuron_id'])
         centroid = mc['centroid']
-        indexes_mapped = np.where(unit_classif == neuron_id)[0]
+        
+        indexes_mapped = np.where(unit_classif == idx_busca)[0]
         data_mapped = data[indexes_mapped]
 
         if len(data_mapped) <= 1:
@@ -356,12 +391,12 @@ def compute_radius_factor_mc(micro_clusters: list, som_map: dict, data: np.ndarr
         std_dev = np.std(dists, ddof=0)
 
         mc['radius'] = radius
-        mc['radius_factor_1'] = 2.0 * radius
+        mc['radius_factor_1'] = 3.0 * radius  # <-- AUMENTADO PARA 3.0
         mc['std_dev'] = std_dev
 
     return micro_clusters
 
-def build_candidate_mc_from_stm(stm_data: np.ndarray, winner_indices: list, centroid: np.ndarray) -> dict:
+def build_candidate_mc_from_stm(stm_data: np.ndarray, winner_indices: list, centroid: np.ndarray, mapping: dict = None) -> dict:
     group_data = stm_data[winner_indices]
 
     if len(group_data) == 0:
@@ -371,13 +406,22 @@ def build_candidate_mc_from_stm(stm_data: np.ndarray, winner_indices: list, cent
     dists = np.sqrt(sq_dists)
 
     radius = np.sqrt(np.mean(sq_dists)) if len(group_data) > 0 else 0.0
+
+    # --- TRAVA DE PROTEÇÃO DO RAIO ---
+    if mapping and 'micro_clusters' in mapping:
+        valid_radii = [mc.get('radius', 0.0) for mc in mapping['micro_clusters'] if mc.get('radius', 0.0) > 0]
+        if valid_radii:
+            global_mean_radius = np.mean(valid_radii)
+            radius = max(radius, global_mean_radius)
+    # ---------------------------------
+
     std_dev = np.std(dists, ddof=0) if len(dists) > 1 else 0.0
 
     candidate = {
         'centroid': centroid.copy(),
         'num_instances': len(group_data),
         'radius': radius,
-        'radius_factor_1': 2.0 * radius,
+        'radius_factor_1': 3.0 * radius,  # <-- AUMENTADO PARA 3.0
         'std_dev': std_dev,
         'group_data': group_data,
         'prototype_vector': None,
@@ -408,12 +452,6 @@ def validate_candidate_cluster_from_indices(stm_data: np.ndarray, cluster_labels
         return True
 
 def decide_extension_or_novelty(candidate_mc: dict, mapping: dict) -> dict:
-    """
-    Aproxima a lógica do MINAS-BR:
-    - usa distância ao centróide do micro-cluster conhecido
-    - compara com std_dev do MC conhecido
-    - se número de extensões >= ceil(z), trata como extensão
-    """
     valid_mcs = mapping['micro_clusters']
     if not valid_mcs:
         return {'type': 'NP', 'closest_mc': None, 'extensions': []}
@@ -428,8 +466,9 @@ def decide_extension_or_novelty(candidate_mc: dict, mapping: dict) -> dict:
 
     extensions = []
     for d, mc in distances:
-        sd = mc.get('std_dev', 0.0)
-        if sd > 0 and d <= 1.5 * sd:
+        r = mc.get('radius', 0.0)
+        
+        if r > 0 and d <= 2.0 * r: 
             extensions.append(mc)
 
     z_model = max(1, int(np.ceil(mapping['z'])))
@@ -461,6 +500,7 @@ def expand_model_for_new_class(mapping: dict) -> tuple:
 
     mapping['class_probabilities'] = new_probs
     mapping['class_totals'] = new_totals
+    mapping.setdefault('total_instances_np', []).append(0)
 
     for mc in mapping['micro_clusters']:
         mc['prototype_vector'] = np.append(mc['prototype_vector'], 0.0)
@@ -501,7 +541,7 @@ def absorb_candidate_as_extension(mapping: dict, candidate_mc: dict, target_mc: 
     target_mc['centroid'] = ((n_old * target_mc['centroid']) + (n_new * candidate_mc['centroid'])) / total_n
     target_mc['num_instances'] = total_n
     target_mc['radius'] = max(target_mc.get('radius', 0.0), candidate_mc.get('radius', 0.0))
-    target_mc['radius_factor_1'] = 2.0 * target_mc['radius']
+    target_mc['radius_factor_1'] = 3.0 * target_mc['radius'] # <-- AUMENTADO PARA 3.0
     target_mc['std_dev'] = max(target_mc.get('std_dev', 0.0), candidate_mc.get('std_dev', 0.0))
     target_mc['last_timestamp'] = current_t
 
@@ -583,7 +623,7 @@ def run_novelty_detection(mapping: dict, short_term_memory: list, stm_indices: l
             continue
 
         centroid = node_weights[node_pos]
-        candidate_mc = build_candidate_mc_from_stm(stm_data, winners, centroid)
+        candidate_mc = build_candidate_mc_from_stm(stm_data, winners, centroid, mapping)
         if candidate_mc is None:
             continue
 

@@ -3,6 +3,7 @@ import pandas as pd
 from minisom import MiniSom
 from collections import Counter
 from sklearn.neighbors import NearestNeighbors
+from growing_som import GrowingSOM
 
 from functions import (
     compute_initial_class_probabilities_totals,
@@ -19,43 +20,53 @@ from functions import (
 )
 
 def kohonen_offline_global(offline_dataset: np.ndarray, offline_classes: pd.DataFrame, num_it: int,
-                           init_n: float, final_n: float, grid_d: int, tr_mode: str, min_ex: int) -> dict:
-    print("\nOffline phase - building maps!")
+                           init_n: float, sf: float, min_ex: int) -> dict:
+    print("\nOffline phase - building global G-SOM!")
 
     class_probabilities, class_totals = compute_initial_class_probabilities_totals(offline_classes)
     z = compute_label_cardinality(offline_classes)
 
     num_features = offline_dataset.shape[1]
-    np.random.seed(10)
-    initial_sigma = grid_d / 2.0
+    
+    # Cálculo do Growth Threshold baseado no Spread Factor de Alahakoon
+    # sf deve estar entre 0 e 1 (ex: 0.5)
+    sf_safe = max(min(sf, 0.999), 0.001) 
+    growth_threshold = -num_features * np.log(sf_safe)
 
-    som = MiniSom(x=grid_d, y=grid_d, input_len=num_features,
-                  sigma=initial_sigma,
-                  learning_rate=init_n,
-                  neighborhood_function='gaussian',
-                  random_seed=10)
+    print(f"Inicializando Global G-SOM (SF={sf_safe}, GT={growth_threshold:.4f})...")
+    
+    global_gsom = GrowingSOM(
+        input_dim=num_features,
+        growth_threshold=growth_threshold,
+        spread_factor=0.9,
+        learning_rate=init_n,
+        max_nodes=80, # Limite generoso para o mapa global
+        random_seed=10
+    )
 
-    print("Initializing SOM weights randomly (sampling from data)...")
-    som.random_weights_init(offline_dataset)
+    print(f"Starting G-SOM training for {num_it} epochs...")
+    global_gsom.train(offline_dataset, num_epochs=num_it)
+    print("G-SOM training completed.")
 
-    print(f"Starting SOM training (BATCH MODE)) for {num_it} epochs...")
-    som.train_batch(offline_dataset, num_it, verbose=True)
-    print("SOM training completed.")
-
+    # Reconstruindo o som_map no formato que suas outras funções esperam
+    nodes_dict = global_gsom.get_node_weights()
+    node_positions = list(nodes_dict.keys())
+    codes = np.array(list(nodes_dict.values()))
+    
     unit_classif = np.zeros(len(offline_dataset), dtype=int)
     distances = np.zeros(len(offline_dataset), dtype=float)
-    weights = som.get_weights()
 
     for i, x in enumerate(offline_dataset):
-        winner_pos = som.winner(x)
-        winner_idx = np.ravel_multi_index(winner_pos, (grid_d, grid_d))
-        unit_classif[i] = winner_idx
-        distances[i] = np.linalg.norm(x - weights[winner_pos])
+        bmu_pos, bmu_dist = global_gsom._find_bmu(x)
+        bmu_idx = node_positions.index(bmu_pos)
+        unit_classif[i] = bmu_idx
+        distances[i] = bmu_dist
 
     som_map = {
-        'codes': weights.reshape(-1, num_features),
+        'codes': codes,
         'unit.classif': unit_classif,
-        'distances': distances
+        'distances': distances,
+        'node_positions': node_positions # Salvamos as posições reais (x,y)
     }
 
     result_mc = compute_micro_clusters(som_map, offline_classes, min_ex)
@@ -69,6 +80,7 @@ def kohonen_offline_global(offline_dataset: np.ndarray, offline_classes: pd.Data
     micro_clusters = compute_radius_factor_mc(micro_clusters, result_mc['som_map'], offline_dataset)
 
     result = {
+        'gsom_model': global_gsom, # SALVANDO A INSTÂNCIA DO G-SOM GLOBAL AQUI
         'som_map': result_mc['som_map'],
         'micro_clusters': micro_clusters,
         'z': z,
@@ -82,14 +94,15 @@ def kohonen_offline_global(offline_dataset: np.ndarray, offline_classes: pd.Data
 
     instances_per_neuron = Counter(unit_classif)
     result['min_instances_neuron'] = min(instances_per_neuron.values()) if instances_per_neuron else 0
-    result['theta'] = grid_d * grid_d * result['min_instances_neuron']
+    result['theta'] = len(nodes_dict) * result['min_instances_neuron']
 
     return result
 
 def kohonen_online_bayes_nd(mapping: dict, online_dataset: np.ndarray, init_n: float,
                             novel_classes: list, update_model_info: bool,
                             num_offline_instances: int,
-                            theta: float, min_ex: int, window_stm_check: int) -> dict:
+                            theta: float, min_ex: int, window_stm_check: int,
+                            sf_online: float) -> dict:
 
     print("\n[DEBUG INÉRCIA] Verificando totais antes da Fase Online:")
     print(f"Total Instances (Denominador Global): {mapping.get('total_instances', 'NÃO ENCONTRADO')}")
@@ -101,7 +114,21 @@ def kohonen_online_bayes_nd(mapping: dict, online_dataset: np.ndarray, init_n: f
 
     print("\nOnline phase (Dynamic Distances + Radius Check)!")
 
-    initial_number_classes = mapping['class_probabilities'].shape[0]
+    #Atualiza o spread factor
+    if 'gsom_model' in mapping:
+        global_gsom = mapping['gsom_model']
+        print(f"\n[TRANSITION] Atualizando G-SOM para Fase Online com SF={sf_online}")
+        global_gsom.update_spread_factor(sf_online)
+        
+        #zerando os erros acumulados da fase offline
+        for pos in global_gsom.errors.keys():
+            global_gsom.errors[pos] = 0.0
+        print("[TRANSITION] Erros residuais do treino offline zerados.")
+    else:
+        print("[AVISO] gsom_model não encontrado no mapping. SF não atualizado.")
+
+    base_number_classes = mapping['class_probabilities'].shape[0]
+    current_number_classes = base_number_classes
     all_predictions = []
     all_pred_indices = []
     indexes_explained = []
@@ -139,7 +166,7 @@ def kohonen_online_bayes_nd(mapping: dict, online_dataset: np.ndarray, init_n: f
         r_factor_1 = mc_winner.get('radius_factor_1', float('inf'))
 
         if winner_dist <= r_factor_1:
-            pred = np.zeros(initial_number_classes)
+            pred = np.zeros(current_number_classes)
             z_current = mapping['z']
             z = min(int(np.ceil(z_current)), len(valid_mcs))
 
@@ -166,7 +193,7 @@ def kohonen_online_bayes_nd(mapping: dict, online_dataset: np.ndarray, init_n: f
                         mc_j['average_output'][1] += 1
                     mc_j['last_timestamp'] = i
 
-                debug_mode = (i == 20000)
+                debug_mode = ('NP' in str(mc_j.get('neuron_id', ''))) and (prob_j_ks_x < cond_prob_threshold)
                 for class_idx in active_classes_sorted:
                     if pred[class_idx] == 1:
                         continue
@@ -183,11 +210,11 @@ def kohonen_online_bayes_nd(mapping: dict, online_dataset: np.ndarray, init_n: f
                     cond_prob_threshold = mc_j['cond_prob_threshold'][class_idx]
 
                     if debug_mode:
-                        print(f"\n--- [DEBUG] Instância {i} | Classe Candidata {class_idx} ---")
-                        print(f"Eq 6 (Prob Bayesiana): {prob_j_ks_x:.10f}")
-                        print(f"   -> Prior: {prob_j_prior:.4f} | Cumulative: {prob_k_j_cumulative:.4f} | Exp(-dist): {prob_x_j:.4f}")
-                        print(f"Eq 7 (Threshold):      {cond_prob_threshold:.10f}")
-                        print(f"DECISÃO: {'[CLASSIFICA]' if prob_j_ks_x >= cond_prob_threshold else '[REJEITA]'}")
+                        print(f"\n[VETO BAYESIANO] Instância {i} | Neurônio: {mc_j['neuron_id']} | Classe: {class_idx}")
+                        print(f"Eq 6 (Calculado): {prob_j_ks_x:.10f}")
+                        print(f"Eq 7 (Threshold): {cond_prob_threshold:.10f}")
+                        print(f"Distância Geométrica: {neuron_j_dist:.4f} (Raio Máximo: {r_factor_1:.4f})")
+                        print(f"Status: Geometria APROVOU, Bayes VETOU -> Foi para Unknown")
 
                     if prob_j_ks_x > 0 and prob_j_ks_x >= cond_prob_threshold:
                         pred[class_idx] = 1
@@ -213,14 +240,14 @@ def kohonen_online_bayes_nd(mapping: dict, online_dataset: np.ndarray, init_n: f
                 mapping = update_model_information(mapping, x, i, init_n, winner_dict, 0)
 
             pred_row = pred.reshape(1, -1)
-            mapping = update_class_totals_probabilities(mapping, pred_row, 1, initial_number_classes, 0, num_offline_instances)
+            mapping = update_class_totals_probabilities(mapping, pred_row, 1, base_number_classes, 0, num_offline_instances)
             mapping['micro_clusters'] = update_cond_probabilities_neurons(mapping['micro_clusters'], mapping['class_probabilities'])
 
         else:
             short_term_memory.append(x_instance)
             stm_indices.append(i)
 
-            pred = np.zeros(initial_number_classes)
+            pred = np.zeros(current_number_classes)
             all_predictions.append(pred)
             all_pred_indices.append(i)
 
@@ -235,7 +262,7 @@ def kohonen_online_bayes_nd(mapping: dict, online_dataset: np.ndarray, init_n: f
                         print(f"   [EXT] Grupo da STM absorvido como extensão de {event['target_mc']}")
 
                         closest_mc = next(mc for mc in mapping['micro_clusters'] if mc['neuron_id'] == event['target_mc'])
-                        pred_ext = np.zeros(initial_number_classes)
+                        pred_ext = np.zeros(current_number_classes)
 
                         active_labels = np.where(closest_mc['prototype_vector'] > 0.5)[0]
                         pred_ext[active_labels] = 1.0
@@ -250,7 +277,7 @@ def kohonen_online_bayes_nd(mapping: dict, online_dataset: np.ndarray, init_n: f
 
                                 pred_row = pred_ext.reshape(1, -1)
                                 mapping = update_class_totals_probabilities(
-                                    mapping, pred_row, 1, initial_number_classes, 0, num_offline_instances
+                                    mapping, pred_row, 1, base_number_classes, 0, num_offline_instances
                                 )
                                 window_predictions.append(pred_ext.copy())
 
@@ -265,8 +292,29 @@ def kohonen_online_bayes_nd(mapping: dict, online_dataset: np.ndarray, init_n: f
                         num_nps_detected += 1
                         np_id = event['np_id']
                         np_class_idx = event['np_class_idx']
+                        centroid_np = event['centroid']
 
-                        print(f"   [+] Transformando em Novelty Pattern: NP_{np_id}")
+                        print(f"   [+] Transformando em Novelty Pattern: NP_{np_id} e EXPANDINDO REDE GLOBAL")
+
+                        global_gsom = mapping['gsom_model']
+                        
+                        # 1. Encontra o BMU na rede global para a novidade
+                        bmu_pos, _ = global_gsom._find_bmu(centroid_np)
+                        
+                        # 2. Força o erro desse BMU para disparar o crescimento
+                        global_gsom.errors[bmu_pos] += global_gsom.growth_threshold + 1.0
+                        
+                        # 3. Dispara o crescimento ao redor do BMU
+                        nodes_before = len(global_gsom.nodes)
+                        global_gsom._grow_around_bmu(bmu_pos)
+                        nodes_after = len(global_gsom.nodes)
+                        
+                        if nodes_after > nodes_before:
+                            print(f"       -> Mapa global expandiu! Novos neurônios criados ao redor de {bmu_pos}.")
+                        
+                        # Atualiza os códigos e posições do som_map global
+                        mapping['som_map']['codes'] = np.array(list(global_gsom.nodes.values()))
+                        mapping['som_map']['node_positions'] = list(global_gsom.nodes.keys())
 
                         for idx_pred in range(len(all_predictions)):
                             all_predictions[idx_pred] = np.append(all_predictions[idx_pred], 0.0)
@@ -274,13 +322,13 @@ def kohonen_online_bayes_nd(mapping: dict, online_dataset: np.ndarray, init_n: f
                         for idx_pred in range(len(window_predictions)):
                             window_predictions[idx_pred] = np.append(window_predictions[idx_pred], 0.0)
 
-                        initial_number_classes += 1
+                        current_number_classes += 1
 
                         for original_idx in event['indices']:
                             try:
                                 list_idx = all_pred_indices.index(original_idx)
 
-                                pred_np = np.zeros(initial_number_classes)
+                                pred_np = np.zeros(current_number_classes)
                                 pred_np[np_class_idx] = 1.0
 
                                 if event.get('extensions'):
@@ -294,7 +342,7 @@ def kohonen_online_bayes_nd(mapping: dict, online_dataset: np.ndarray, init_n: f
 
                                 pred_row = pred_np.reshape(1, -1)
                                 mapping = update_class_totals_probabilities(
-                                    mapping, pred_row, 1, initial_number_classes, 1, num_offline_instances
+                                    mapping, pred_row, 1, base_number_classes, 1, num_offline_instances
                                 )
                                 window_predictions.append(pred_np.copy())
 
@@ -312,11 +360,11 @@ def kohonen_online_bayes_nd(mapping: dict, online_dataset: np.ndarray, init_n: f
                 for pred_vec in window_predictions:
                     pred_vec = np.asarray(pred_vec, dtype=float)
 
-                    if len(pred_vec) < initial_number_classes:
-                        pad_size = initial_number_classes - len(pred_vec)
+                    if len(pred_vec) < current_number_classes:
+                        pad_size = current_number_classes - len(pred_vec)
                         pred_vec = np.append(pred_vec, np.zeros(pad_size))
-                    elif len(pred_vec) > initial_number_classes:
-                        pred_vec = pred_vec[:initial_number_classes]
+                    elif len(pred_vec) > current_number_classes:
+                        pred_vec = pred_vec[:current_number_classes]
 
                     padded_window_predictions.append(pred_vec)
 
@@ -330,7 +378,7 @@ def kohonen_online_bayes_nd(mapping: dict, online_dataset: np.ndarray, init_n: f
 
     predictions_matrix = np.array(all_predictions)
     final_predictions = pd.DataFrame(
-        np.zeros((len(online_dataset), initial_number_classes)),
+        np.zeros((len(online_dataset), current_number_classes)),
         index=np.arange(len(online_dataset))
     )
 
@@ -340,7 +388,7 @@ def kohonen_online_bayes_nd(mapping: dict, online_dataset: np.ndarray, init_n: f
     print("\n[RESUMO ND]")
     print(f"Extensões detectadas: {num_extensions_detected}")
     print(f"NPs detectados: {num_nps_detected}")
-    print(f"Número final de classes no modelo: {initial_number_classes}")
+    print(f"Número final de classes no modelo: {current_number_classes}")
 
     results = {
         'predictions': final_predictions,

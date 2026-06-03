@@ -129,6 +129,8 @@ class GrowingSOM:
         self.initialize_from_data(data)
 
         for epoch in range(num_epochs):
+
+            print(f"   -> [G-SOM] Treinando época {epoch + 1}/{num_epochs}... Tamanho atual da rede: {len(self.nodes)} neurônios")
             for x in data:
                 bmu_pos, bmu_dist = self._find_bmu(x)
 
@@ -162,3 +164,13 @@ class GrowingSOM:
 
     def get_active_nodes(self):
         return [(int(pos[0]), int(pos[1])) for pos, count in self.hits.items() if count > 0]
+
+    def update_spread_factor(self, new_sf):
+        """
+        Atualiza o Spread Factor e recalcula o Growth Threshold dinamicamente.
+        """
+        self.sf = new_sf
+        # Recalcula a Equação 11 de Alahakoon com o novo SF
+        self.growth_threshold = -self.input_dim * np.log(self.sf)
+        print(f"[G-SOM] Spread Factor dinâmico atualizado para: {self.sf}")
+        print(f"[G-SOM] Novo Growth Threshold (GT): {self.growth_threshold:.4f}")

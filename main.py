@@ -78,6 +78,7 @@ def main():
     print("Parameters loaded successfully:")
     for key, value in parameters.items():
         print(f"- {key}: {value}")
+    
 
     print("\nLoading data")
     train_data, train_feature_indices, train_label_indices = load_arff_data(parameters['train_data'])
@@ -101,35 +102,28 @@ def main():
     online_dataset_scaled = scaler.transform(online_dataset)
     print("Data standardized successfully.")
 
-    #offline_dataset_scaled = offline_dataset
-    #online_dataset_scaled = online_dataset
-
     print("\nStarting Offline Phase")
 
     num_epochs = int(parameters['num_iterations'])
     num_samples = len(offline_dataset_scaled)
     num_iterations_total = num_epochs * num_samples
-    #print(f"Training Info: {num_epochs} epochs * {num_samples} samples = {num_iterations_total} total iterations.")
     print(f"Training Info: Batch Mode selected. Running for {num_epochs} epochs.")
 
     mapping = kohonen_offline_global(
         offline_dataset=offline_dataset_scaled,
         offline_classes=offline_classes,
-        num_it=num_epochs,
+        num_it=int(parameters['num_iterations']),
         init_n=parameters['n0'],
-        final_n=parameters['n1'],
-        grid_d=int(parameters['grid_dimension']),
-        tr_mode=parameters['train_mode'],
+        sf=parameters['sf_offline'], 
         min_ex=int(parameters['min_examples_cluster'])
     )
     print("Offline Phase Completed")
     print("Model mapping created successfully.")
 
     dataset_name = os.path.basename(parameters['test_data']).split('.')[0]
-    grid_dim = int(parameters['grid_dimension'])
     
-    # Chama a função de plotagem (lembre de importar plot_som_hits no topo do main.py)
-    plot_som_hits(mapping, grid_dim, dataset_name)
+    spread_factor_label = str(parameters['sf_offline']).replace('.', '')
+    
 
     print("\n--- Starting Online Phase ---")
     init_n = parameters['n0']
@@ -150,7 +144,8 @@ def main():
         num_offline_instances=num_offline_instances,
         theta=parameters['theta'],
         min_ex=parameters['min_examples_cluster'],
-        window_stm_check=window_stm_check
+        window_stm_check=window_stm_check,
+        sf_online=parameters['sf_online']
     )
 
     print("Online Phase Completed")
@@ -212,9 +207,9 @@ def main():
     # Definindo o caminho do arquivo de resultados
     results_txt_path = f"Results/{dataset_name}.txt"
     
-    # Cria o rótulo do algoritmo
-    grid_dim = int(parameters['grid_dimension'])
-    algo_label = f"SOM-AA-{grid_dim}"
+    # Cria o rótulo do algoritmo com base no spread factor
+    sf_val = parameters['sf_offline']
+    algo_label = f"SOM-AA-GSOM-SF{sf_val}"
     
     # Pega a lista de F-Measure por janela que já foi calculada
     fmeasure_window_values = evaluation_metrics['ma_fmeasure_window']
@@ -232,12 +227,12 @@ def main():
         os.makedirs('Results')
     dataset_name = os.path.basename(parameters['test_data']).split('.')[0]
     timestamp = datetime.now().strftime("%H.%M.%S")
-    grid_dim = int(parameters['grid_dimension'])
-    params_filename = f"Results/{dataset_name}-{timestamp}-parameters-{grid_dim}.txt"
+    sf_val = parameters['sf_offline']
+    params_filename = f"Results/{dataset_name}-{timestamp}-parameters-SF{sf_val}.txt"
     with open(params_filename, 'w') as f:
         f.write(str(parameters))
     print(f"\nParameters saved to {params_filename}")
-    model_filename = f"Results/{dataset_name}-{timestamp}-model-{grid_dim}.pkl"
+    model_filename = f"Results/{dataset_name}-{timestamp}-model-SF{sf_val}-ONLINE{parameters['sf_online']}.pkl"
     with open(model_filename, 'wb') as f:
         pickle.dump(online_results, f)
     print(f"Full results object saved to {model_filename}")
