@@ -1,3 +1,4 @@
+from functions import macro_precision_recall_fmeasure_windows
 import numpy as np
 import os
 import time
@@ -44,7 +45,8 @@ def evaluate_novelty_detection_jaccard(true_labels: np.ndarray,
             'Recall': rec,
             'UnkRM_Percent': unkrm,
             'Desconhecidos_Total': unk_count,
-            'Associacoes': {}
+            'Associacoes': {},
+            'final_predictions': final_predictions
         }
 
     # Matriz Jaccard: linhas = NPs, colunas = classes novas reais
@@ -106,7 +108,8 @@ def evaluate_novelty_detection_jaccard(true_labels: np.ndarray,
         'Recall': macro_recall,
         'UnkRM_Percent': unkrm,
         'Desconhecidos_Total': unk_count,
-        'Associacoes': associacoes
+        'Associacoes': associacoes,
+        'final_predictions': final_predictions
     }
 
 
@@ -195,6 +198,21 @@ def main():
 
     results = evaluate_novelty_detection_jaccard(true_labels, predicted_labels, num_known_classes)
 
+    print("\nCalculando as métricas por janela (Pós-Jaccard) para o gráfico...")
+    metrics_windows = macro_precision_recall_fmeasure_windows(
+        true_labels=true_labels,
+        predicted_labels=results['final_predictions'], # Usando a matriz fundida
+        num_evaluation_windows=50,
+        dataset_name=dataset_name
+    )
+    
+    fmeasure_window_values = metrics_windows['ma_fmeasure_window']
+    values_str = ",".join([f"{x:.8f}" for x in fmeasure_window_values])
+    
+    results_txt_path = f"Results/{dataset_name}_Jaccard.txt"
+    with open(results_txt_path, "w", encoding='utf-8') as f:
+        f.write(f"SOM-AA-GSOM-0.85,{values_str}\n")
+    print(f"Resultados por janela salvos em: {results_txt_path}")
     print("\n" + "=" * 60)
     print("RESULTADOS FINAIS - AVALIAÇÃO JACCARD / MINAS-BR")
     print("=" * 60)

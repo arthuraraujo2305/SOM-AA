@@ -9,7 +9,6 @@ def plot_from_txt(file_path):
         return
     dataset_name = os.path.basename(file_path).split('.')[0]
     
-    # Configuração do gráfico (tamanho e estilo)
     plt.figure(figsize=(10, 6))
     plt.title(f"Macro F-Measure over Evaluation Windows - {dataset_name}")
     plt.xlabel("Evaluation Windows")
@@ -31,23 +30,20 @@ def plot_from_txt(file_path):
                 print(f"Erro ao ler linha: {label}")
                 continue
             
-            # Eixo X (número das janelas)
+
             windows = range(1, len(values) + 1)
             
-            # Escolher estilo de linha baseado no algoritmo (opcional, para diferenciar)
             linestyle = '-'
             linewidth = 2
             if "SOM-AA" in label:
-                linewidth = 2.5 # Destacar o seu método
+                linewidth = 2.5 
             elif "SOM-PT" in label:
                 linestyle = '--'
             
             plt.plot(windows, values, label=label, linestyle=linestyle, linewidth=linewidth)
 
-    # Adicionar legenda
     plt.legend(loc='lower right', fontsize='small', framealpha=0.9)
     
-    # Salvar a figura
     output_img = file_path.replace('.txt', '.png')
     plt.savefig(output_img, dpi=300)
     print(f"Gráfico salvo em: {output_img}")

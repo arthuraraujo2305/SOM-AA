@@ -209,14 +209,16 @@ def kohonen_online_bayes_nd(mapping: dict, online_dataset: np.ndarray, init_n: f
                     prob_j_ks_x = prob_j_prior * prob_k_j_cumulative * prob_x_j
                     cond_prob_threshold = mc_j['cond_prob_threshold'][class_idx]
 
-                    if debug_mode:
-                        print(f"\n[VETO BAYESIANO] Instância {i} | Neurônio: {mc_j['neuron_id']} | Classe: {class_idx}")
-                        print(f"Eq 6 (Calculado): {prob_j_ks_x:.10f}")
-                        print(f"Eq 7 (Threshold): {cond_prob_threshold:.10f}")
-                        print(f"Distância Geométrica: {neuron_j_dist:.4f} (Raio Máximo: {r_factor_1:.4f})")
-                        print(f"Status: Geometria APROVOU, Bayes VETOU -> Foi para Unknown")
+                    #if debug_mode:
+                        #print(f"\n[VETO BAYESIANO] Instância {i} | Neurônio: {mc_j['neuron_id']} | Classe: {class_idx}")
+                        #print(f"Eq 6 (Calculado): {prob_j_ks_x:.10f}")
+                        #print(f"Eq 7 (Threshold): {cond_prob_threshold:.10f}")
+                        #print(f"Distância Geométrica: {neuron_j_dist:.4f} (Raio Máximo: {r_factor_1:.4f})")
+                        #print(f"Status: Geometria APROVOU, Bayes VETOU -> Foi para Unknown")
 
-                    if prob_j_ks_x > 0 and prob_j_ks_x >= cond_prob_threshold:
+                    # Se for NP, confia na Geometria. Se for classe velha, usa Bayes.
+                    is_np = 'NP' in str(mc_j.get('neuron_id', ''))
+                    if is_np or (prob_j_ks_x > 0 and prob_j_ks_x >= cond_prob_threshold):
                         pred[class_idx] = 1
                         if 'average_output' in mc_j:
                             mc_j['average_output'][0] += np.exp(-neuron_j_dist)

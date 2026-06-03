@@ -316,45 +316,50 @@ def macro_precision_recall_fmeasure_windows(true_labels: np.ndarray, predicted_l
         true_window = true_labels[start_idx:end_idx]
         predicted_window = predicted_labels[start_idx:end_idx]
 
+        # --- NOVA MÁSCARA MINAS-BR ---
+        # Ignora instâncias Unknown (soma das predições == 0) igual ao 'if(!Z.contains("unk"))' do Java
+        known_mask = np.sum(predicted_window, axis=1) > 0
+        
+        true_w_filt = true_window[known_mask]
+        pred_w_filt = predicted_window[known_mask]
+
         total_prec_window, total_recall_window, total_fmeasure_window = 0.0, 0.0, 0.0
+        active_classes = 0
 
         for j in range(num_labels):
-            tp_cum[j] += np.sum((true_window[:, j] == 1) & (predicted_window[:, j] == 1))
-            fp_cum[j] += np.sum((true_window[:, j] == 0) & (predicted_window[:, j] == 1))
-            fn_cum[j] += np.sum((true_window[:, j] == 1) & (predicted_window[:, j] == 0))
+            # Conta TP, FP e FN usando apenas as instâncias que não foram dadas como Unknown
+            tp_cum[j] += np.sum((true_w_filt[:, j] == 1) & (pred_w_filt[:, j] == 1))
+            fp_cum[j] += np.sum((true_w_filt[:, j] == 0) & (pred_w_filt[:, j] == 1))
+            fn_cum[j] += np.sum((true_w_filt[:, j] == 1) & (pred_w_filt[:, j] == 0))
 
             tp = tp_cum[j]
             fp = fp_cum[j]
             fn = fn_cum[j]
 
+            # Se a classe nunca apareceu e nunca foi predita, ela é um fantasma. Ignora!
             if tp + fp + fn == 0:
-                prec = 1.0
-                recall = 1.0
-                fmeasure = 1.0
-            elif tp + fp == 0:
-                prec = 0.0
-                recall = tp / (tp + fn)
-                fmeasure = 0.0
-            elif tp + fn == 0:
-                prec = tp / (tp + fp)
-                recall = 0.0
+                continue
+            
+            # A classe existe, então entra no denominador
+            active_classes += 1
+
+            prec = tp / (tp + fp) if (tp + fp) > 0 else 0.0
+            recall = tp / (tp + fn) if (tp + fn) > 0 else 0.0
+
+            if prec + recall == 0:
                 fmeasure = 0.0
             else:
-                prec = tp / (tp + fp)
-                recall = tp / (tp + fn)
-                if prec + recall == 0:
-                    fmeasure = 0.0
-                else:
-                    beta2 = beta * beta
-                    fmeasure = ((beta2 + 1) * prec * recall) / (beta2 * prec + recall)
+                beta2 = beta * beta
+                fmeasure = ((beta2 + 1) * prec * recall) / (beta2 * prec + recall)
 
             total_prec_window += prec
             total_recall_window += recall
             total_fmeasure_window += fmeasure
 
-        ma_precision_window.append(total_prec_window / num_labels if num_labels > 0 else 0.0)
-        ma_recall_window.append(total_recall_window / num_labels if num_labels > 0 else 0.0)
-        ma_fmeasure_window.append(total_fmeasure_window / num_labels if num_labels > 0 else 0.0)
+        # Divide estritamente pelo número de classes ATIVAS (como no Java)
+        ma_precision_window.append(total_prec_window / active_classes if active_classes > 0 else 0.0)
+        ma_recall_window.append(total_recall_window / active_classes if active_classes > 0 else 0.0)
+        ma_fmeasure_window.append(total_fmeasure_window / active_classes if active_classes > 0 else 0.0)
 
         start_idx = end_idx
 
